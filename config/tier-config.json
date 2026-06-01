@@ -1,0 +1,38 @@
+{
+  "tiers": {
+    "fact": {
+      "name": "fact",
+      "description": "Raw, unprocessed knowledge from sources",
+      "ttl": 604800000,
+      "autoPromote": true,
+      "path": "fact",
+      "syncToObsidian": true
+    },
+    "memory": {
+      "name": "memory",
+      "description": "Synthesized knowledge with context",
+      "ttl": 2592000000,
+      "autoPromote": true,
+      "path": "memory",
+      "syncToObsidian": true
+    },
+    "wisdom": {
+      "name": "wisdom",
+      "description": "Curated, verified knowledge",
+      "ttl": 0,
+      "autoPromote": false,
+      "path": "wisdom",
+      "syncToObsidian": true
+    }
+  },
+  "obsidianVaultPath": "/home/duck/Obsidian",
+  "wikiPath": "openclaw-wiki",
+  "memoryPath": "/home/duck/.openclaw/workspace/openclaw-middleware/memory",
+  "graphPath": "/home/duck/.openclaw/workspace/openclaw-middleware/graph",
+  "auditPath": "/home/duck/.openclaw/workspace/openclaw-middleware/audit",
+  "semanticCache": true,
+  "semanticCacheTTL": 3600000,
+  "syncToObsidian": true,
+  "verifyOnIngest": true,
+  "sigmaStrictMode": false
+}

@@ -1,0 +1,25 @@
+{
+  "name": "openclaw-middleware",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Modular middleware layer bridging OpenClaw + Hermes with knowledge store, actions, history, logs, and long-term memory",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "mcp:server": "node packages/mcp-memory/dist/server.js",
+    "wiki:lint": "node scripts/lint.js",
+    "wiki:ingest": "node scripts/ingest.js",
+    "wiki:query": "node scripts/query.js",
+    "wiki:update": "node scripts/update.js",
+    "memory:brief": "node packages/mcp-memory/dist/tools/brief.js",
+    "memory:audit": "node packages/mcp-memory/dist/tools/audit.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Cache
+.cache/
+tmp/
+temp/
+
+# Wiki (can be regenerated)
+wiki/index.md
+wiki/log.md
+
+# Memory (can be regenerated)
+memory/recent.md
+
+# Audit proofs
+audit/proofs/*.json
+
+# Generated files
+*.generated.ts
+
+# TypeScript
+*.tsbuildinfo
