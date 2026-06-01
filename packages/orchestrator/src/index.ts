@@ -14,6 +14,9 @@ import type {
   VerifyResult, 
   MiddlewareConfig 
 } from './types.js';
+import { SQLiteFTS } from '@openclaw-middleware/tiered-memory/dist/fts.js';
+import { TypedKnowledgeGraph } from '@openclaw-middleware/tiered-memory/dist/graph.js';
+import { ClaimStore } from '@openclaw-middleware/tiered-memory/dist/claims.js';
 
 /**
  * The orchestrator pipeline
@@ -22,6 +25,9 @@ export class Orchestrator {
   private obsidian: ObsidianBridge;
   private tieredMemory: TieredMemory;
   private sigmaVerifier: SigmaVerifier;
+  private fts: SQLiteFTS;
+  private graph: TypedKnowledgeGraph;
+  private claimStore: ClaimStore;
   private config: MiddlewareConfig;
 
   constructor(config: MiddlewareConfig) {
@@ -33,6 +39,8 @@ export class Orchestrator {
       wikiPath: config.wikiPath,
       semanticCache: config.semanticCache ?? true,
       cacheTTL: config.semanticCacheTTL ?? 3600000, // 1 hour default
+      llmEndpoint: config.llmEndpoint || 'http://localhost:1234/v1',
+      llmModel: config.llmModel || 'nomic-embed-text',
     });
 
     // Initialize tiered memory
@@ -47,6 +55,21 @@ export class Orchestrator {
       graphPath: config.graphPath,
       auditPath: config.auditPath,
       strictMode: config.sigmaStrictMode ?? false,
+    });
+
+    // Initialize SQLite FTS engine
+    this.fts = new SQLiteFTS({
+      dbPath: config.ftsDbPath || ':memory:',
+    });
+
+    // Initialize typed knowledge graph
+    this.graph = new TypedKnowledgeGraph({
+      graphPath: config.graphPath,
+    });
+
+    // Initialize claim store
+    this.claimStore = new ClaimStore({
+      claimsPath: config.claimsPath || path.join(config.graphPath, 'claims'),
     });
   }
 
@@ -103,6 +126,7 @@ export class Orchestrator {
 
   /**
    * Query the knowledge store with provenance
+   * Uses SQLite FTS for fast search, falls back to tiered memory
    */
   async query(
     question: string,
@@ -120,26 +144,46 @@ export class Orchestrator {
       includeGraphContext = false,
     } = options ?? {};
 
-    // Step 1: Search tiered memory
-    const memoryResults = await this.tieredMemory.search(question, {
-      tiers,
-      limit,
-      includeProvenance,
-    });
+    let results: QueryResult['results'] = [];
 
-    // Step 2: Get graph context if requested
-    let graphContext = null;
-    if (includeGraphContext) {
-      graphContext = await this.sigmaVerifier.getGraphContext(question);
+    // Step 1: Search via SQLite FTS (fast, indexed)
+    try {
+      const ftsResults = this.fts.search({ query: question, tiers, limit });
+      results = ftsResults.map(r => ({
+        content: r.content,
+        source: r.source || r.entryId,
+        relevance: r.relevance,
+        tier: r.tier,
+        provenance: includeProvenance ? { originalSource: r.source || '', extractedAt: r.createdAt, chain: [] } : undefined,
+      }));
+    } catch {
+      // FTS not available, fall through to tiered memory
     }
 
-    // Step 3: Check wiki index for relevant pages
-    const wikiPages = await this.obsidian.searchWiki(question, { limit: limit / 2 });
+    // Step 2: If FTS returned nothing, use tiered memory search
+    if (results.length === 0) {
+      const memoryResults = await this.tieredMemory.search(question, {
+        tiers,
+        limit,
+        includeProvenance,
+      });
+      results = memoryResults;
+    }
+
+    // Step 3: Get graph context if requested
+    let graphContext = null;
+    if (includeGraphContext) {
+      graphContext = await this.graph.getGraph();
+    }
+
+    // Step 4: Check wiki index for relevant pages
+    const wikiPages = await this.obsidian.searchWiki(question, { limit: Math.max(5, Math.floor(limit / 2)) });
+    results = [...results, ...wikiPages];
 
     return {
-      results: [...memoryResults, ...wikiPages],
+      results,
       graphContext,
-      tiers: memoryResults.map(r => r.tier),
+      tiers: tiers,
       query: question,
       timestamp: new Date().toISOString(),
     };
@@ -189,7 +233,7 @@ export class Orchestrator {
     return {
       tiers: tierStats,
       wikiStats,
-      memoryStats: memoryStats,
+      memoryStats: { totalEntries: Object.values(tierStats).reduce((s, t) => s + t.count, 0), tierBreakdown: tierStats },
       recentActivity,
     };
   }
@@ -213,6 +257,60 @@ export class Orchestrator {
     tiers?: string[];
   }): Promise<{ archived: number; message: string }> {
     return this.tieredMemory.archive(options);
+  }
+
+  /**
+   * Sync wiki changes to Obsidian vault
+   */
+  async syncToVault(): Promise<{ synced: number; errors: string[] }> {
+    return this.obsidian.syncToVault();
+  }
+
+  /**
+   * Sync Obsidian vault changes back to wiki
+   */
+  async syncFromVault(): Promise<{ synced: number; errors: string[] }> {
+    return this.obsidian.syncFromVault();
+  }
+
+  /**
+   * Add a claim with provenance
+   */
+  async addClaim(claim: Omit<import('@openclaw-middleware/tiered-memory/dist/claims.js').Claim, 'id' | 'createdAt' | 'updatedAt' | 'status'>): Promise<import('@openclaw-middleware/tiered-memory/dist/claims.js').Claim> {
+    return this.claimStore.add(claim);
+  }
+
+  /**
+   * Search claims
+   */
+  async searchClaims(query: string, options?: {
+    types?: string[];
+    statuses?: string[];
+    limit?: number;
+  }): Promise<Array<{ id: string; content: string; type: string; source: string; status: string }>> {
+    const claims = await this.claimStore.search(query, options);
+    return claims.map(c => ({ id: c.id, content: c.content, type: c.type, source: c.source.path, status: c.status }));
+  }
+
+  /**
+   * Get graph for visualization
+   */
+  async getGraph(): Promise<{ nodes: Array<{ id: string; label: string; type: string }>; edges: Array<{ from: string; to: string; type: string }> }> {
+    return this.graph.getGraph();
+  }
+
+  /**
+   * Get claim statistics
+   */
+  async getClaimStats(): Promise<{ total: number; byType: Record<string, number>; byStatus: Record<string, number>; recent: Array<{ date: string; count: number }> }> {
+    return this.claimStore.getStats();
+  }
+
+  /**
+   * Get FTS stats
+   */
+  getFTSStats(): Record<string, number> {
+    return this.fts.getStats();
   }
 }
 
