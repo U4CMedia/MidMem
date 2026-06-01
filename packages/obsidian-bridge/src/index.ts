@@ -14,12 +14,15 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { SemanticCache } from './semantic-cache.js';
 
 export interface ObsidianConfig {
   vaultPath: string;
   wikiPath: string;
   semanticCache?: boolean;
   cacheTTL?: number;
+  llmEndpoint?: string; // LM Studio endpoint for semantic cache
+  llmModel?: string;    // LM Studio model for embeddings
 }
 
 export interface ConceptExtraction {
@@ -92,13 +95,22 @@ interface WikiPageMeta {
 export class ObsidianBridge {
   private vaultPath: string;
   private wikiPath: string;
-  private cache: SemanticCache | null;
+  private semanticCache: SemanticCache | null;
   private _stats: { totalPages: number; totalLinks: number } = { totalPages: 0, totalLinks: 0 };
 
   constructor(config: ObsidianConfig) {
     this.vaultPath = config.vaultPath;
     this.wikiPath = config.wikiPath;
-    this.cache = config.semanticCache ? new SemanticCache(config.cacheTTL) : null;
+    if (config.semanticCache && config.llmEndpoint) {
+      this.semanticCache = new SemanticCache({
+        llmEndpoint: config.llmEndpoint,
+        llmModel: config.llmModel || 'nomic-embed-text',
+        cacheDir: path.join(this.vaultPath, '.obsidian-cache'),
+      });
+      this.semanticCache.load().catch(() => {}); // Load cache, ignore errors
+    } else {
+      this.semanticCache = null;
+    }
   }
 
   /**
@@ -107,8 +119,19 @@ export class ObsidianBridge {
    */
   async extractConcepts(filePath: string, type: string): Promise<ConceptExtraction> {
     const cacheKey = `extract:${filePath}:${type}`;
-    const cached = this.cache?.get(cacheKey);
-    if (cached) return JSON.parse(cached);
+    
+    // Check semantic cache first
+    if (this.semanticCache) {
+      const cached = this.semanticCache.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+      
+      // Also check for similar concepts (dedup)
+      const similar = await this.semanticCache.getSimilar(cacheKey, 3);
+      if (similar.length > 0) {
+        // Return cached result for the most similar entry
+        return JSON.parse(similar[0].value);
+      }
+    }
 
     // Read source file
     const content = await fs.readFile(filePath, 'utf-8');
@@ -128,7 +151,12 @@ export class ObsidianBridge {
       relatedPages,
     };
 
-    this.cache?.set(cacheKey, JSON.stringify(result));
+    // Store in semantic cache
+    if (this.semanticCache) {
+      await this.semanticCache.set(cacheKey, JSON.stringify(result));
+      await this.semanticCache.save(); // Persist to disk
+    }
+    
     return result;
   }
 
@@ -549,5 +577,74 @@ export class ObsidianBridge {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Sync wiki changes to Obsidian vault
+   * Writes all wiki pages to their corresponding locations in the vault
+   */
+  async syncToVault(): Promise<{ synced: number; errors: string[] }> {
+    const wikiDir = path.join(this.vaultPath, this.wikiPath);
+    let synced = 0;
+    const errors: string[] = [];
+
+    try {
+      const files = await fs.readdir(wikiDir, { recursive: true });
+      for (const file of files) {
+        if (!file.endsWith('.md')) continue;
+        
+        const srcPath = path.join(wikiDir, file);
+        const destPath = path.join(this.vaultPath, file);
+        
+        try {
+          const content = await fs.readFile(srcPath, 'utf-8');
+          await fs.mkdir(path.dirname(destPath), { recursive: true });
+          await fs.writeFile(destPath, content);
+          synced++;
+        } catch (err) {
+          errors.push(`${file}: ${err}`);
+        }
+      }
+    } catch (err) {
+      errors.push(`Failed to read wiki directory: ${err}`);
+    }
+
+    return { synced, errors };
+  }
+
+  /**
+   * Sync Obsidian vault changes back to wiki
+   * Reads all markdown files from the wiki directory and updates the wiki
+   */
+  async syncFromVault(): Promise<{ synced: number; errors: string[] }> {
+    const wikiDir = path.join(this.vaultPath, this.wikiPath);
+    let synced = 0;
+    const errors: string[] = [];
+
+    try {
+      const files = await fs.readdir(this.vaultPath, { recursive: true });
+      for (const file of files) {
+        if (!file.endsWith('.md')) continue;
+        
+        // Skip files already in the wiki directory
+        if (file.startsWith(this.wikiPath + '/')) continue;
+        
+        const srcPath = path.join(this.vaultPath, file);
+        const destPath = path.join(wikiDir, file);
+        
+        try {
+          const content = await fs.readFile(srcPath, 'utf-8');
+          await fs.mkdir(path.dirname(destPath), { recursive: true });
+          await fs.writeFile(destPath, content);
+          synced++;
+        } catch (err) {
+          errors.push(`${file}: ${err}`);
+        }
+      }
+    } catch (err) {
+      errors.push(`Failed to read vault directory: ${err}`);
+    }
+
+    return { synced, errors };
   }
 }
