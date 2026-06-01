@@ -34,5 +34,8 @@
   "semanticCacheTTL": 3600000,
   "syncToObsidian": true,
   "verifyOnIngest": true,
-  "sigmaStrictMode": false
+  "sigmaStrictMode": false,
+  "llmProvider": "lm-studio",
+  "llmEndpoint": "http://localhost:1234/v1",
+  "mcpPort": 3100
 }
