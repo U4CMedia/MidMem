@@ -36,6 +36,6 @@
   "verifyOnIngest": true,
   "sigmaStrictMode": false,
   "llmProvider": "lm-studio",
-  "llmEndpoint": "http://localhost:1234/v1",
+  "llmEndpoint": "http://192.168.50.210:1234/v1",
   "mcpPort": 3100
 }
