@@ -11,7 +11,7 @@
  * - Simple, no-frills API
  */
 
-import sqlite3 from 'node:sqlite';
+import * as sqlite from 'node:sqlite';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -40,12 +40,12 @@ export interface SearchResult {
  * SQLite FTS engine — vanilla, no external deps beyond node:sqlite
  */
 export class SQLiteFTS {
-  private db: sqlite3.Database;
+  private db: sqlite.Database;
   private dbPath: string;
 
   constructor(config: FTSConfig) {
     this.dbPath = config.dbPath;
-    this.db = new sqlite3.Database(this.dbPath);
+    this.db = new sqlite.Database(this.dbPath);
     this.init();
   }
 
@@ -137,6 +137,7 @@ export class SQLiteFTS {
     const tierFilter = tiers && tiers.length > 0
       ? `AND tier IN (${tiers.map(() => '?').join(',')})`
       : '';
+    const tierParams = tiers && tiers.length > 0 ? tiers : [];
 
     // Use FTS5 match with BM25 relevance
     const stmt = this.db.prepare(`
@@ -156,7 +157,7 @@ export class SQLiteFTS {
       LIMIT ? OFFSET ?
     `);
 
-    const params = [query, ...((tiers || []).length > 0 ? tiers : []), limit, offset];
+    const params = [query, ...tierParams, limit, offset];
     const rows = stmt.all(...params) as Array<{
       entry_id: string;
       tier: string;
@@ -223,9 +224,20 @@ export class SQLiteFTS {
   }
 
   /**
-   * Close the database
+   * Close the database (call when done to release file descriptor)
    */
   close(): void {
-    this.db.close();
+    try {
+      this.db.close();
+    } catch {
+      // Already closed
+    }
+  }
+
+  /**
+   * Dispose resources (alias for close, for consistency with other packages)
+   */
+  dispose(): void {
+    this.close();
   }
 }

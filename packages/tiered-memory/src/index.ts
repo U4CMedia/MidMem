@@ -321,10 +321,16 @@ export class TieredMemory {
           const filePath = path.join(tierDir, matchingFile);
 
           if (softDelete) {
-            // Soft delete: update status in frontmatter
+            // Soft delete: update status in frontmatter only
             const content = await fs.readFile(filePath, 'utf-8');
-            const updated = content.replace(/status: active/g, 'status: deleted');
-            await fs.writeFile(filePath, updated);
+            // Match only the frontmatter block (between first --- and second ---)
+            const fmMatch = content.match(/^(---\n[\s\S]*?\n---\n)/);
+            if (fmMatch) {
+              const frontmatter = fmMatch[1];
+              const body = content.slice(frontmatter.length);
+              const updatedFM = frontmatter.replace(/^status: active/m, 'status: deleted');
+              await fs.writeFile(filePath, updatedFM + body);
+            }
             return {
               success: true,
               message: `Entry ${entryId} soft-deleted in tier ${tier.name}`,
@@ -394,9 +400,11 @@ export class TieredMemory {
           const age = Date.now() - stats.mtime.getTime();
 
           if (age > olderThan) {
-            // Move to archive
+            // Move to archive with collision-safe naming
             const archivePath = path.join(archiveDir, file);
-            await fs.rename(filePath, archivePath);
+            const collisionPath = path.join(archiveDir, `${file}-${Date.now()}`);
+            const targetPath = await fs.stat(archivePath).then(() => collisionPath).catch(() => archivePath);
+            await fs.rename(filePath, targetPath);
             archived++;
           }
         }

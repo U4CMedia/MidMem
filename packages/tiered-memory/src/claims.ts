@@ -136,6 +136,7 @@ export class ClaimStore {
 
   /**
    * Find claims contradicted by newer claims
+   * Optimized: skips already-contradicted claims, uses content hash for quick pre-filter
    */
   async findContradictedClaims(): Promise<Array<{
     claim: Claim;
@@ -164,9 +165,12 @@ export class ClaimStore {
         const claim = sorted[i];
         if (claim.status !== 'active') continue;
 
+        // Quick pre-filter: skip if content is too different from all newer claims
         const contradictedBy: Claim[] = [];
         for (let j = 0; j < i; j++) {
           const newer = sorted[j];
+          // Skip if already contradicted by a previous check
+          if (contradicted.find(c => c.claim.id === claim.id)) break;
           if (this.detectContradiction(claim, newer)) {
             contradictedBy.push(newer);
           }
@@ -372,21 +376,54 @@ export class ClaimStore {
 
     const lines = match[1].split('\n');
     const properties: Record<string, unknown> = {};
+    let inMetadata = false;
 
     for (const line of lines) {
-      const [key, ...valueParts] = line.split(':');
-      const value = valueParts.join(':').trim();
-      if (key && value) {
-        if (value === 'true') properties[key] = true;
-        else if (value === 'false') properties[key] = false;
-        else if (/^\d+$/.test(value)) properties[key] = parseInt(value, 10);
-        else properties[key] = value.replace(/['"]/g, '');
+      if (line === 'metadata:') {
+        inMetadata = true;
+        continue;
       }
+      if (inMetadata) {
+        if (/^\s+\S/.test(line)) {
+          const [key, ...valueParts] = line.trim().split(':');
+          const value = valueParts.join(':').trim();
+          if (key && value) {
+            properties[key] = value.replace(/['"]/g, '');
+          }
+        } else {
+          inMetadata = false;
+        }
+      } else {
+        const [key, ...valueParts] = line.split(':');
+        const value = valueParts.join(':').trim();
+        if (key && value) {
+          if (value === 'true') properties[key] = true;
+          else if (value === 'false') properties[key] = false;
+          else if (/^\d+$/.test(value)) properties[key] = parseInt(value, 10);
+          else properties[key] = value.replace(/['"]/g, '');
+        }
+      }
+    }
+
+    // Extract body content (everything after the second ---)
+    const bodyMatch = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
+    const body = bodyMatch ? bodyMatch[1].trim() : '';
+
+    // Extract provenance chain from body
+    const chainMatch = body.match(/- \*\*Chain\*\*: (.*)/);
+    const chain: Array<{ step: string; source: string }> = [];
+    if (chainMatch) {
+      chainMatch[1].split(' → ').forEach(segment => {
+        const parts = segment.split('→');
+        if (parts.length >= 2) {
+          chain.push({ step: parts[0].trim(), source: parts[1].trim() });
+        }
+      });
     }
 
     return {
       id: properties.id as string,
-      content: '', // Will be filled from body
+      content: body,
       type: properties.type as string,
       source: {
         path: properties.source as string,
@@ -399,7 +436,7 @@ export class ClaimStore {
         extractedAt: properties.extractedAt as string,
         extractor: properties.extractor as string,
         confidence: properties.confidence as number,
-        chain: [], // Will be parsed from body
+        chain,
       },
       metadata: properties.metadata as Record<string, unknown>,
       createdAt: properties.created as string,

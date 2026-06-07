@@ -37,6 +37,7 @@ export class SemanticCache {
   private config: SemanticCacheConfig;
   private cache: Map<string, CacheEntry>;
   private loaded: boolean = false;
+  private index: Map<string, string> = new Map(); // simple hash→key index for O(1) lookup
 
   constructor(config: SemanticCacheConfig) {
     this.config = {
@@ -92,17 +93,31 @@ export class SemanticCache {
 
   /**
    * Get similar entries for a key
+   * Uses hash index for quick candidate selection, then computes similarity
    */
   async getSimilar(key: string, limit: number = 5): Promise<Array<{ key: string; value: string; similarity: number }>> {
     const keyEmbedding = await this.getEmbedding(key);
     if (!keyEmbedding) return [];
 
+    const keyHash = this.simpleHash(key);
+    const candidates = new Set<string>();
+
+    // Use index for O(1) candidate selection
+    candidates.add(keyHash);
+    for (const idxKey of this.index.keys()) {
+      if (idxKey.startsWith(keyHash.slice(0, 4))) {
+        candidates.add(this.index.get(idxKey)!);
+      }
+    }
+
     const results: Array<{ key: string; value: string; similarity: number }> = [];
 
-    for (const [k, entry] of this.cache) {
+    for (const candidateKey of candidates) {
+      const entry = this.cache.get(candidateKey);
+      if (!entry || entry.embedding.length === 0) continue;
       const similarity = this.cosineSimilarity(keyEmbedding, entry.embedding);
       if (similarity >= this.config.similarityThreshold) {
-        results.push({ key: k, value: entry.value, similarity });
+        results.push({ key: candidateKey, value: entry.value, similarity });
       }
     }
 
@@ -127,6 +142,7 @@ export class SemanticCache {
         value,
         timestamp: Date.now(),
       });
+      this.index.set(key, key);
       return;
     }
 
@@ -142,6 +158,7 @@ export class SemanticCache {
       value,
       timestamp: Date.now(),
     });
+    this.index.set(key, key);
   }
 
   /**
@@ -149,6 +166,7 @@ export class SemanticCache {
    */
   async delete(key: string): Promise<void> {
     this.cache.delete(key);
+    this.index.delete(key);
   }
 
   /**

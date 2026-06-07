@@ -205,18 +205,23 @@ export class TypedKnowledgeGraph {
       // No entities yet
     }
 
-    // Get edges for connected entities
-    for (const entity of entities) {
-      const edges = await this.getEdgesForEntity(entity.id);
-      for (const edge of edges) {
-        edgeSet.add(edge.id);
+    // Load edges for connected entities
+    const edges: Edge[] = [];
+    const edgeDir = path.join(this.graphPath, 'edges');
+    try {
+      const allEdgeFiles = await fs.readdir(edgeDir);
+      for (const edgeFile of allEdgeFiles) {
+        if (!edgeFile.endsWith('.md')) continue;
+        const edgePath = path.join(edgeDir, edgeFile);
+        const edgeContent = await fs.readFile(edgePath, 'utf-8');
+        const edge = this.parseEdge(edgeContent);
+        if (edge && entities.some(e => e.id === edge.from || e.id === edge.to)) {
+          edges.push(edge);
+        }
       }
+    } catch {
+      // No edges directory
     }
-
-    const edges = Array.from(edgeSet).map(id => {
-      // Re-parse edges (in a real impl, cache them)
-      return null as unknown as Edge;
-    }).filter(Boolean) as Edge[];
 
     return { entities, edges };
   }

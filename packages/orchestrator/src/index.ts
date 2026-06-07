@@ -5,6 +5,7 @@
  * that bridges OpenClaw/Hermes with the knowledge store.
  */
 
+import * as path from 'path';
 import { ObsidianBridge, type ObsidianConfig } from '@openclaw-middleware/obsidian-bridge';
 import { TieredMemory, type TierConfig } from '@openclaw-middleware/tiered-memory';
 import { SigmaVerifier, type SigmaConfig } from '@openclaw-middleware/sigma-verifier';
@@ -14,9 +15,9 @@ import type {
   VerifyResult, 
   MiddlewareConfig 
 } from './types.js';
-import { SQLiteFTS } from '@openclaw-middleware/tiered-memory/dist/fts.js';
-import { TypedKnowledgeGraph } from '@openclaw-middleware/tiered-memory/dist/graph.js';
-import { ClaimStore } from '@openclaw-middleware/tiered-memory/dist/claims.js';
+import { SQLiteFTS } from '@openclaw-middleware/tiered-memory';
+import { TypedKnowledgeGraph } from '@openclaw-middleware/tiered-memory';
+import { ClaimStore } from '@openclaw-middleware/tiered-memory';
 
 /**
  * The orchestrator pipeline
@@ -147,6 +148,7 @@ export class Orchestrator {
     let results: QueryResult['results'] = [];
 
     // Step 1: Search via SQLite FTS (fast, indexed)
+    let ftsFailed = false;
     try {
       const ftsResults = this.fts.search({ query: question, tiers, limit });
       results = ftsResults.map(r => ({
@@ -156,9 +158,13 @@ export class Orchestrator {
         tier: r.tier,
         provenance: includeProvenance ? { originalSource: r.source || '', extractedAt: r.createdAt, chain: [] } : undefined,
       }));
-    } catch {
+    } catch (err) {
       // FTS not available, fall through to tiered memory
+      ftsFailed = true;
     }
+
+    // Step 2: If FTS failed or returned nothing, use tiered memory search
+    if (ftsFailed || results.length === 0) {
 
     // Step 2: If FTS returned nothing, use tiered memory search
     if (results.length === 0) {

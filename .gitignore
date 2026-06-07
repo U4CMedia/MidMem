@@ -48,3 +48,12 @@ audit/proofs/*.json
 
 # TypeScript
 *.tsbuildinfo
+
+# Runtime state DB (source of truth at runtime; regenerated/owned by deployment)
+state.db
+state.db-shm
+state.db-wal
+packages/core/state.db*
+
+# MCP / bridge output dirs
+playwright-output/

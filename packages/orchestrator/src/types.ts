@@ -2,6 +2,9 @@
  * Shared types for the middleware orchestrator
  */
 
+// Re-export TierConfig from tiered-memory to avoid duplication
+export type { TierConfig } from '@openclaw-middleware/tiered-memory';
+
 /**
  * Middleware configuration
  */
@@ -28,6 +31,14 @@ export interface MiddlewareConfig {
   verifyOnIngest?: boolean;
   /** Sigma verifier strict mode (default: false) */
   sigmaStrictMode?: boolean;
+  /** LM Studio endpoint for embeddings (default: http://localhost:1234/v1) */
+  llmEndpoint?: string;
+  /** LM Studio model for embeddings (default: nomic-embed-text) */
+  llmModel?: string;
+  /** SQLite FTS database path (default: :memory:) */
+  ftsDbPath?: string;
+  /** Claim store path (default: graphPath/claims) */
+  claimsPath?: string;
 }
 
 /**
