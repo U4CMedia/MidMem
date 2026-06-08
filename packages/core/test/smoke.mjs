@@ -64,6 +64,7 @@ try {
   // 8. Brief
   const b = o.brief();
   ok(b.tiers.memory >= 1 && b.tiers.fact >= 1, `brief reports tier counts: ${JSON.stringify(b.tiers)}`);
+  ok(b.vectors?.backend === 'sqlite', `vector backend reported via brief: ${b.vectors?.backend}`);
 
   // 9. Cross-agent scope isolation (#2)
   await o.storeMemory({ content: 'OPENCLAW_ONLY beacon zebra marker', tier: 'memory', scope: 'openclaw' });
@@ -83,6 +84,30 @@ try {
   ok(b1.ingested === 1, `bridge ingested ${b1.ingested} new file`);
   const b2 = await bridgeMemory(o, { sources: [{ dir: srcDir, scope: 'openclaw', type: 'note' }], project: false });
   ok(b2.ingested === 0 && b2.skipped === 1, `bridge re-run is idempotent (dedup): ingested ${b2.ingested}, skipped ${b2.skipped}`);
+
+  // 11. Trust feedback loop (borrow)
+  const fb = await o.storeMemory({ content: 'Trust feedback target about kubernetes operators.', tier: 'memory', scope: 'shared' });
+  const before = o.recall(fb.id).trust_score;
+  o.feedback(fb.id, true);
+  ok(o.recall(fb.id).trust_score > before, `feedback raised trust ${before} → ${o.recall(fb.id).trust_score}`);
+
+  // 12. Token-budget retrieval (borrow)
+  const tb = await o.query('hybrid vector retrieval', { maxTokens: 80, limit: 10 });
+  const totalTok = tb.results.reduce((s, r) => s + Math.ceil(r.content.length / 4), 0);
+  ok(totalTok <= 80, `token budget respected (${totalTok} ≤ 80 tok across ${tb.results.length} results)`);
+
+  // 13. Trigram substring lane (borrow) — query a non-token substring
+  await o.storeMemory({ content: 'The authentication subsystem uses OAuth2 tokens.', tier: 'memory', scope: 'shared' });
+  const tg = await o.query('thenticat', { scopes: ['shared'], limit: 5 });
+  ok(tg.results.some((r) => /authentication/i.test(r.content)), 'trigram lane finds substring (non-token) match');
+
+  // 14. Embedding dimension guard (borrow)
+  let dimGuard = false;
+  try {
+    await o.memory.upsertVector('dimtest-1', new Array(1024).fill(0.1), 'real-model-a', 'lmstudio');
+    await o.memory.upsertVector('dimtest-2', new Array(768).fill(0.1), 'real-model-b', 'lmstudio');
+  } catch (e) { dimGuard = /dim mismatch/i.test(e.message); }
+  ok(dimGuard, 'dim guard rejects mixing real-model vector dimensions');
 
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
 } catch (e) {

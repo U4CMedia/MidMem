@@ -16,8 +16,13 @@ const TOOLS = {
   },
   query: {
     description: 'Hybrid (lexical+vector) search of the knowledge store with provenance. Defaults to this agent\'s scope + shared; pass scopes to override.',
-    schema: S({ query: { type: 'string' }, tiers: { type: 'array', items: { type: 'string' } }, scopes: { type: 'array', items: { type: 'string' } }, limit: { type: 'number' }, includeGraphContext: { type: 'boolean' } }, ['query']),
-    run: (a) => o.query(a.query, { tiers: a.tiers, scopes: a.scopes, limit: a.limit ?? 20, includeGraphContext: !!a.includeGraphContext }),
+    schema: S({ query: { type: 'string' }, tiers: { type: 'array', items: { type: 'string' } }, scopes: { type: 'array', items: { type: 'string' } }, limit: { type: 'number' }, maxTokens: { type: 'number' }, includeGraphContext: { type: 'boolean' } }, ['query']),
+    run: (a) => o.query(a.query, { tiers: a.tiers, scopes: a.scopes, limit: a.limit ?? 20, maxTokens: a.maxTokens, includeGraphContext: !!a.includeGraphContext }),
+  },
+  feedback: {
+    description: 'Mark a recalled memory entry helpful (or not) — adjusts its trust score over time.',
+    schema: S({ entryId: { type: 'string' }, helpful: { type: 'boolean' } }, ['entryId']),
+    run: (a) => o.feedback(a.entryId, a.helpful !== false),
   },
   remember: {
     description: 'Store a memory entry (tier default: memory; wisdom requires curated:true). scope defaults to this agent; pass "shared" to publish to the commons.',

@@ -6,9 +6,10 @@ import { genId, nowISO, json } from './util.mjs';
 
 export class TieredMemory {
   /** @param {import('./db.mjs').StateDB} db @param {object} cfg */
-  constructor(db, cfg) {
+  constructor(db, cfg, vectorStore) {
     this.db = db;
     this.cfg = cfg;
+    this.vectorStore = vectorStore; // pluggable: sqlite (default) | qdrant
     this.tierNames = cfg.tiers.map((t) => t.name);
   }
 
@@ -33,11 +34,43 @@ export class TieredMemory {
     return { id, rowid: Number(info.lastInsertRowid), tier, scope };
   }
 
-  upsertVector(entryId, embedding, model) {
-    this.db.prepare(`
-      INSERT INTO vectors(entry_id,dim,embedding,model,created_at) VALUES(?,?,?,?,?)
-      ON CONFLICT(entry_id) DO UPDATE SET dim=excluded.dim, embedding=excluded.embedding, model=excluded.model
-    `).run(entryId, embedding.length, JSON.stringify(embedding), model, nowISO());
+  async upsertVector(entryId, embedding, model, mode = 'unknown') {
+    // Dimension guard: real-model vectors must all share one dimension (the mixed-dim trap).
+    // Fallback (hash) vectors are exempt — they're the offline placeholder, not the canonical space.
+    const isFallback = mode === 'fallback' || (model || '').startsWith('fallback');
+    if (!isFallback) {
+      const row = this.db.prepare("SELECT value FROM meta WHERE key='vector_dim'").get();
+      if (!row) this.db.prepare("INSERT INTO meta(key,value) VALUES('vector_dim',?)").run(String(embedding.length));
+      else if (Number(row.value) !== embedding.length)
+        throw new Error(`embedding dim mismatch: canonical=${row.value}, got ${embedding.length} from model '${model}'. Refusing to mix dimensions — re-embed or reset 'vector_dim'.`);
+    }
+    await this.vectorStore.upsert({ id: entryId, embedding, model });
+  }
+
+  /** Bump retrieval_count + last_accessed_at for entries that were returned (usage signal). */
+  recordRetrieval(ids) {
+    if (!ids?.length) return;
+    const ts = nowISO();
+    const stmt = this.db.prepare('UPDATE entries SET retrieval_count = retrieval_count + 1, last_accessed_at = ? WHERE id = ?');
+    for (const id of ids) stmt.run(ts, id);
+  }
+
+  /** Feedback loop: nudge trust_score (and helpful_count) up/down. Clamped to [0,1]. */
+  recordFeedback(id, helpful = true) {
+    const e = this.db.prepare('SELECT trust_score FROM entries WHERE id=?').get(id);
+    if (!e) return { success: false, message: `not found: ${id}` };
+    const trust = Math.max(0, Math.min(1, (e.trust_score ?? 0.5) + (helpful ? 0.05 : -0.10)));
+    this.db.prepare('UPDATE entries SET helpful_count = helpful_count + ?, trust_score = ?, updated_at = ? WHERE id = ?')
+      .run(helpful ? 1 : 0, trust, nowISO(), id);
+    return { success: true, id, trust_score: Number(trust.toFixed(3)), helpful };
+  }
+
+  /** Vector store health: canonical dim + breakdown by dim + fallback count (dim-guard visibility). */
+  vectorHealth() {
+    const canonical = this.db.prepare("SELECT value FROM meta WHERE key='vector_dim'").get()?.value;
+    const byDim = this.db.prepare('SELECT dim, COUNT(*) c FROM vectors GROUP BY dim').all();
+    const fallback = this.db.prepare("SELECT COUNT(*) c FROM vectors WHERE model LIKE 'fallback%'").get().c;
+    return { backend: this.cfg.vectorBackend, canonicalDim: canonical ? Number(canonical) : null, byDim: Object.fromEntries(byDim.map((r) => [r.dim, r.c])), fallbackVectors: fallback };
   }
 
   get(id) {
@@ -83,13 +116,14 @@ export class TieredMemory {
     return { success: true, message: `promoted ${id} → ${toTier}` };
   }
 
-  forget(id, { soft = true } = {}) {
+  async forget(id, { soft = true } = {}) {
     const r = this.db.prepare('SELECT id FROM entries WHERE id=?').get(id);
     if (!r) return { success: false, message: `not found: ${id}` };
     if (soft) {
       this.db.prepare("UPDATE entries SET status='deleted', updated_at=? WHERE id=?").run(nowISO(), id);
     } else {
-      this.db.prepare('DELETE FROM vectors WHERE entry_id=?').run(id);
+      await this.vectorStore.delete(id);
+      this.db.prepare('DELETE FROM vectors WHERE entry_id=?').run(id); // no-op for qdrant backend
       this.db.prepare('DELETE FROM entries WHERE id=?').run(id);
     }
     return { success: true, message: `${soft ? 'soft-' : ''}deleted ${id}` };

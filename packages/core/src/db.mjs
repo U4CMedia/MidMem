@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 export class StateDB {
   /** @param {string} dbPath */
@@ -45,9 +45,28 @@ export class StateDB {
         scope TEXT NOT NULL DEFAULT 'shared',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        expires_at TEXT
+        expires_at TEXT,
+        trust_score REAL NOT NULL DEFAULT 0.5,
+        retrieval_count INTEGER NOT NULL DEFAULT 0,
+        helpful_count INTEGER NOT NULL DEFAULT 0,
+        last_accessed_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_entries_tier ON entries(tier, status);
+
+      -- Trigram FTS5 for substring/phrase matching (complements token-based entries_fts).
+      CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts_trigram USING fts5(
+        content, tokenize='trigram', content='entries', content_rowid='rowid'
+      );
+      CREATE TRIGGER IF NOT EXISTS entries_tri_ai AFTER INSERT ON entries BEGIN
+        INSERT INTO entries_fts_trigram(rowid, content) VALUES (new.rowid, new.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS entries_tri_ad AFTER DELETE ON entries BEGIN
+        INSERT INTO entries_fts_trigram(entries_fts_trigram, rowid, content) VALUES ('delete', old.rowid, old.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS entries_tri_au AFTER UPDATE ON entries BEGIN
+        INSERT INTO entries_fts_trigram(entries_fts_trigram, rowid, content) VALUES ('delete', old.rowid, old.content);
+        INSERT INTO entries_fts_trigram(rowid, content) VALUES (new.rowid, new.content);
+      END;
 
       CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
         content, type, tier, content='entries', content_rowid='rowid'
@@ -103,6 +122,17 @@ export class StateDB {
     // Migrations for pre-existing databases (idempotent) — must precede any index on a new column.
     this.#ensureColumn('entries', 'scope', "TEXT NOT NULL DEFAULT 'shared'");
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_entries_scope ON entries(scope)');
+    // v3: trust scoring + usage feedback + access recency
+    this.#ensureColumn('entries', 'trust_score', 'REAL NOT NULL DEFAULT 0.5');
+    this.#ensureColumn('entries', 'retrieval_count', 'INTEGER NOT NULL DEFAULT 0');
+    this.#ensureColumn('entries', 'helpful_count', 'INTEGER NOT NULL DEFAULT 0');
+    this.#ensureColumn('entries', 'last_accessed_at', 'TEXT');
+    // v3: backfill the trigram index once for pre-existing rows (triggers cover new rows).
+    if (!this.db.prepare("SELECT 1 FROM meta WHERE key='trigram_built'").get()) {
+      if (this.db.prepare('SELECT COUNT(*) c FROM entries').get().c > 0)
+        this.db.exec("INSERT INTO entries_fts_trigram(entries_fts_trigram) VALUES('rebuild')");
+      this.db.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES('trigram_built','1')").run();
+    }
     this.db.prepare('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
       .run('schema_version', String(SCHEMA_VERSION));
   }

@@ -151,9 +151,9 @@ node bin/cli.mjs project                      # render the Obsidian vault
 node bin/cli.mjs bridge                       # pull native agent memory into the store
 ```
 
-### MCP tools (10)
+### MCP tools (11)
 `ingest` · `query` · `remember` · `recall` · `brief` · `audit` · `forget` · `archive` ·
-`promote` · `project`
+`promote` · `project` · `feedback` (trust)
 
 ### Configuration (env)
 | Var | Default | Purpose |
@@ -163,6 +163,8 @@ node bin/cli.mjs bridge                       # pull native agent memory into th
 | `WIKI_PATH` | `LLM Wiki` | Wiki subfolder in the vault |
 | `OCMW_LLM_ENDPOINT` | `http://localhost:1234/v1` | OpenAI-compatible endpoint (embed + extract) |
 | `OCMW_EMBED_MODEL` | `bge-m3` | Embedding model (load it in your server) |
+| `OCMW_VECTOR_BACKEND` | `sqlite` | Vector store: `sqlite` (in-DB, zero-dep) or `qdrant` |
+| `OCMW_QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint (when backend=qdrant) |
 | `OCMW_EXTRACT_MODEL` | (chat model) | Extraction model |
 | `OCMW_AGENT_SCOPE` | `shared` | This consumer's scope: `openclaw`/`hermes`/`shared` |
 | `OCMW_LLM_ENABLED` | `1` | Set `0` to force offline/deterministic fallbacks |

@@ -14,13 +14,15 @@ import { SigmaVerifier } from './verify.mjs';
 import { PolicyEvaluator, governed } from './governance.mjs';
 import { projectVault } from './project.mjs';
 import { hybridSearch } from './retrieval.mjs';
+import { makeVectorStore } from './vectorstore.mjs';
 import { genId, sha12, nowISO } from './util.mjs';
 
 export class Orchestrator {
   constructor(overrides = {}) {
     this.cfg = loadConfig(overrides);
     this.db = new StateDB(this.cfg.dbPath);
-    this.memory = new TieredMemory(this.db, this.cfg);
+    this.vectorStore = makeVectorStore(this.cfg, this.db);
+    this.memory = new TieredMemory(this.db, this.cfg, this.vectorStore);
     this.embedder = new Embedder(this.cfg);
     this.extractor = new Extractor(this.cfg);
     this.graph = new GraphStore(this.db);
@@ -45,8 +47,8 @@ export class Orchestrator {
       const prov = { originalSource: path, extractedAt: nowISO(), chain: [{ step: 'ingest', source: path }] };
       const stored = this.db.tx(() =>
         this.memory.store({ content: ex.summary, type: 'ingest', tier: 'memory', scope, sourceId, provenance: prov, concepts: ex.concepts }));
-      const { vector, model } = await this.embedder.embed(ex.summary);
-      this.memory.upsertVector(stored.id, vector, model);
+      const { vector, model, mode } = await this.embedder.embed(ex.summary);
+      await this.memory.upsertVector(stored.id, vector, model, mode);
 
       const nodeIds = ex.concepts.map((c) => this.graph.upsertNode({ type: c.type || 'concept', label: c.name, source: path, properties: { confidence: c.confidence } }));
       for (let i = 1; i < nodeIds.length; i++) this.graph.upsertEdge({ from: nodeIds[0], to: nodeIds[i], type: 'relates', source: path });
@@ -63,8 +65,8 @@ export class Orchestrator {
     return governed(this.gov, 'store', { tier, scope, curated }, async () => {
       const prov = source ? { originalSource: source.path, extractedAt: nowISO(), chain: [{ step: 'remember', source: source.path }] } : null;
       const stored = this.db.tx(() => this.memory.store({ content, type, tier, scope, provenance: prov, concepts }));
-      const { vector, model } = await this.embedder.embed(content);
-      this.memory.upsertVector(stored.id, vector, model);
+      const { vector, model, mode } = await this.embedder.embed(content);
+      await this.memory.upsertVector(stored.id, vector, model, mode);
       if (concepts) for (const c of concepts) this.graph.upsertNode({ type: c.type || 'concept', label: c.name, source: 'remember' });
       this.db.logOp('remember', { entry: stored.id, tier });
       return { success: true, ...stored };
@@ -74,9 +76,13 @@ export class Orchestrator {
   async query(question, opts = {}) {
     const scopes = opts.scopes || this.#defaultScopes();
     const results = await hybridSearch(this.db, this.memory, this.embedder, question, { ...opts, scopes });
+    this.memory.recordRetrieval(results.map((r) => r.id)); // usage signal feeds trust/decay
     const graphContext = opts.includeGraphContext ? this.#graphContext(question) : null;
     return { query: question, results, scopes, graphContext, tiers: opts.tiers || this.memory.tierNames, timestamp: nowISO() };
   }
+
+  /** Feedback loop — caller marks a recalled entry helpful/unhelpful (nudges trust_score). */
+  feedback(id, helpful = true) { const r = this.memory.recordFeedback(id, helpful); this.db.logOp('feedback', { id, helpful }); return r; }
 
   /** Reads default to this agent's own scope plus the shared commons. */
   #defaultScopes() { return [...new Set([this.cfg.agentScope, 'shared'])]; }
@@ -89,6 +95,7 @@ export class Orchestrator {
       tiers: this.memory.stats(),
       claims: this.claims.stats(),
       graph: { nodes: g.nodes.length, edges: g.edges.length },
+      vectors: this.memory.vectorHealth(),
       recent: this.db.prepare('SELECT ts,operation FROM log ORDER BY id DESC LIMIT 10').all(),
     };
   }
@@ -102,7 +109,7 @@ export class Orchestrator {
   }
 
   async forget(id, { soft = true, force = false } = {}) {
-    return governed(this.gov, 'forget', { soft, force }, () => { const r = this.memory.forget(id, { soft }); this.db.logOp('forget', { id, soft }); return r; });
+    return governed(this.gov, 'forget', { soft, force }, async () => { const r = await this.memory.forget(id, { soft }); this.db.logOp('forget', { id, soft }); return r; });
   }
 
   archive(opts = {}) { const r = this.memory.archive(opts); this.db.logOp('archive', r); return r; }

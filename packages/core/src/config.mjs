@@ -60,11 +60,19 @@ export function loadConfig(overrides = {}) {
     llmEnabled: process.env.OCMW_LLM_ENABLED !== '0',
     /** Per-call timeout for LLM (ms) — the local model can saturate; keep tight. */
     llmTimeoutMs: Number(process.env.OCMW_LLM_TIMEOUT_MS || 20000),
-    /** Hybrid fusion: RRF constant + per-source weights. */
+    /** Hybrid fusion: RRF constant + per-lane weights (fts token, trigram substring, vector). */
     rrfK: 60,
-    fusionWeights: { fts: 1.0, vector: 1.0 },
+    fusionWeights: { fts: 1.0, trigram: 0.5, vector: 1.0 },
+    /** Additive ranking boosts, kept small vs a single RRF rank (≈ 1/60 ≈ 0.0167). */
+    trustWeight: 0.01, // × (trust_score − 0.5) → ±0.005
+    graphBoost: 0.004, // × shared-concept count (capped at 3)
     /** Fallback embedding dimension when offline. */
     fallbackDim: 256,
+    /** Vector backend: 'sqlite' (in-DB JSON cosine, zero-dep, default) or 'qdrant' (external ANN). */
+    vectorBackend: process.env.OCMW_VECTOR_BACKEND || 'sqlite',
+    qdrantUrl: process.env.OCMW_QDRANT_URL || 'http://localhost:6333',
+    qdrantCollection: process.env.OCMW_QDRANT_COLLECTION || 'openduck_memory',
+    qdrantApiKey: process.env.OCMW_QDRANT_API_KEY || '',
     tiers: DEFAULT_TIERS,
     /** Default memory scope for this process: `openclaw` | `hermes` | `shared`.
      *  Set per MCP registration (OCMW_AGENT_SCOPE). Writes default here; reads = this + shared.
