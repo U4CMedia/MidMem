@@ -151,9 +151,15 @@ node bin/cli.mjs project                      # render the Obsidian vault
 node bin/cli.mjs bridge                       # pull native agent memory into the store
 ```
 
-### MCP tools (11)
+### MCP tools (12)
 `ingest` · `query` · `remember` · `recall` · `brief` · `audit` · `forget` · `archive` ·
-`promote` · `project` · `feedback` (trust)
+`promote` · `project` · `feedback` (trust) · `handoff_brief` (memory gate)
+
+**Hand-off memory gate ("firstware"):** `handoff_brief` builds a scoped, token-budgeted memory brief
+to inject into an agent hand-off (e.g. before an ACP spawn, which doesn't share context) so the
+receiving model can't overlook prior knowledge. Two profiles: **`local`** (small models — tight,
+authoritative, push-only) and **`frontier`** (cloud models — richer, provenance + ids, push-brief +
+pull-depth). The gate *calls* the store; it doesn't replace it (firstware-on-middleware).
 
 ### Configuration (env)
 | Var | Default | Purpose |

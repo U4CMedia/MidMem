@@ -38,7 +38,8 @@ function filterActiveIds(db, ids, tiers, scoped) {
  * @param {import('./embeddings.mjs').Embedder} embedder
  */
 export async function hybridSearch(db, memory, embedder, query, opts = {}) {
-  const { tiers = memory.tierNames, scopes = null, limit = 20, maxTokens = null, includeProvenance = true } = opts;
+  const { scopes = null, limit = 20, maxTokens = null, includeProvenance = true } = opts;
+  const tiers = (opts.tiers && opts.tiers.length) ? opts.tiers : memory.tierNames;
   const cfg = memory.cfg;
   const k = cfg.rrfK;
   const w = cfg.fusionWeights;

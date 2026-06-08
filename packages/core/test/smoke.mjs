@@ -109,6 +109,16 @@ try {
   } catch (e) { dimGuard = /dim mismatch/i.test(e.message); }
   ok(dimGuard, 'dim guard rejects mixing real-model vector dimensions');
 
+  // 15. Hand-off memory gate (firstware) — local + frontier profiles
+  const hbLocal = await o.handoffBrief({ task: 'hybrid retrieval vector fusion', profile: 'local' });
+  ok(/AUTHORITATIVE MEMORY/.test(hbLocal.brief) && hbLocal.count >= 1,
+    `local hand-off brief: authoritative framing, ${hbLocal.count} items, ~${hbLocal.tokensEstimate} tok`);
+  const hbFrontier = await o.handoffBrief({ task: 'hybrid retrieval vector fusion', profile: 'frontier' });
+  ok(/Retrieved memory/.test(hbFrontier.brief) && /recall|query/.test(hbFrontier.brief) && /trust/.test(hbFrontier.brief),
+    'frontier hand-off brief: provenance/trust + invites pull');
+  const hbEmpty = await o.handoffBrief({ task: 'anything', profile: 'local', scopes: ['void_scope'] });
+  ok(hbEmpty.count === 0 && /no prior knowledge/i.test(hbEmpty.brief), 'empty hand-off brief degrades cleanly');
+
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
 } catch (e) {
   console.error('\nFATAL:', e.stack); fail++;

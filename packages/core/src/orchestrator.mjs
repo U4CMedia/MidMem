@@ -15,6 +15,7 @@ import { PolicyEvaluator, governed } from './governance.mjs';
 import { projectVault } from './project.mjs';
 import { hybridSearch } from './retrieval.mjs';
 import { makeVectorStore } from './vectorstore.mjs';
+import { handoffBrief as buildHandoffBrief } from './handoff.mjs';
 import { genId, sha12, nowISO } from './util.mjs';
 
 export class Orchestrator {
@@ -83,6 +84,9 @@ export class Orchestrator {
 
   /** Feedback loop — caller marks a recalled entry helpful/unhelpful (nudges trust_score). */
   feedback(id, helpful = true) { const r = this.memory.recordFeedback(id, helpful); this.db.logOp('feedback', { id, helpful }); return r; }
+
+  /** Hand-off memory gate (firstware) — build a brief to inject into an agent hand-off. */
+  handoffBrief(opts = {}) { return buildHandoffBrief(this, opts); }
 
   /** Reads default to this agent's own scope plus the shared commons. */
   #defaultScopes() { return [...new Set([this.cfg.agentScope, 'shared'])]; }

@@ -24,6 +24,11 @@ const TOOLS = {
     schema: S({ entryId: { type: 'string' }, helpful: { type: 'boolean' } }, ['entryId']),
     run: (a) => o.feedback(a.entryId, a.helpful !== false),
   },
+  handoff_brief: {
+    description: 'Build a memory brief to inject into an agent hand-off (e.g. before spawning Hermes over ACP, which does not share context). Returns {brief} to prepend to the task string. profile: "local" (tight, authoritative, push-only — for small/local models) or "frontier" (richer, provenance+ids, push+pull — for cloud models).',
+    schema: S({ task: { type: 'string' }, profile: { type: 'string' }, scopes: { type: 'array', items: { type: 'string' } }, tiers: { type: 'array', items: { type: 'string' } } }, ['task']),
+    run: (a) => o.handoffBrief({ task: a.task, profile: a.profile || 'local', scopes: a.scopes, tiers: a.tiers }),
+  },
   remember: {
     description: 'Store a memory entry (tier default: memory; wisdom requires curated:true). scope defaults to this agent; pass "shared" to publish to the commons.',
     schema: S({ content: { type: 'string' }, type: { type: 'string' }, tier: { type: 'string' }, scope: { type: 'string' }, curated: { type: 'boolean' } }, ['content']),
