@@ -147,6 +147,21 @@ try {
   ok(promoted.tier === 'wisdom' && promoted.status === 'active' && promoted.expires_at == null,
     'promotion to wisdom clears expiry and stays active');
 
+  // 19. Supersede-on-reingest: editing a file archives its earlier entries (any tier)
+  const evolving = path.join(tmp, 'evolving.md');
+  fs.writeFileSync(evolving, 'First revision of an evolving document about pelican migration routes.');
+  const rev1 = await o.ingest({ path: evolving, type: 'note' });
+  await o.promote(rev1.entry.id, 'wisdom', { curated: true });
+  fs.writeFileSync(evolving, 'Second revision of the evolving document — the migration routes shifted north.');
+  const rev2 = await o.ingest({ path: evolving, type: 'note' });
+  ok(rev2.superseded.length === 1 && rev2.superseded[0] === rev1.entry.id,
+    'reingest of a changed file supersedes its prior entry (even after wisdom promotion)');
+  ok(o.recall(rev1.entry.id).status === 'archived' && o.recall(rev2.entry.id).status === 'active',
+    'old revision archived, new revision active');
+  const rev3 = await o.ingest({ path: evolving, type: 'note' });
+  ok(rev3.skipped === true && o.recall(rev2.entry.id).status === 'active',
+    'unchanged reingest still dedups and supersedes nothing');
+
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
 } catch (e) {
   console.error('\nFATAL:', e.stack); fail++;

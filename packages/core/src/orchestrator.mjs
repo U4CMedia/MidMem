@@ -47,7 +47,17 @@ export class Orchestrator {
       const prov = { originalSource: path, extractedAt: nowISO(), chain: [{ step: 'ingest', source: path }] };
       // Sources row (the dedup hash) commits WITH the entry: a failed ingest must not
       // leave the hash behind, or re-ingests would be skipped as 'unchanged' forever.
+      // Supersede-on-reingest: a changed file replaces its earlier ingests — archive
+      // every active entry from a prior source row for the same path, whatever its
+      // tier (a stale wisdom copy is still stale). Same tx, so the old entries can't
+      // be archived without the replacement landing.
+      let superseded = [];
       const stored = this.db.tx(() => {
+        superseded = this.db.prepare(
+          "SELECT e.id FROM entries e JOIN sources s ON e.source_id = s.id WHERE s.path = ? AND e.status = 'active'",
+        ).all(path).map((r) => r.id);
+        const sup = this.db.prepare("UPDATE entries SET status='archived', updated_at=? WHERE id=?");
+        for (const id of superseded) sup.run(nowISO(), id);
         this.db.prepare('INSERT INTO sources(id,path,type,title,hash,ingested_at,metadata) VALUES(?,?,?,?,?,?,?)')
           .run(sourceId, path, type, title || null, hash, nowISO(), JSON.stringify(metadata));
         return this.memory.store({ content: ex.summary, type: 'ingest', tier: 'memory', scope, sourceId, provenance: prov, concepts: ex.concepts });
@@ -59,8 +69,8 @@ export class Orchestrator {
       for (const cl of ex.claims) this.claims.add({ content: cl.content, type: 'fact', source: { path, type, title }, provenance: { extractor: ex.mode, confidence: cl.confidence } });
 
       const verification = this.verifier.verifyConcepts(ex.concepts);
-      this.db.logOp('ingest', { path, entry: stored.id, concepts: ex.concepts.length, claims: ex.claims.length, mode: ex.mode, conflicts: verification.conflicts.length });
-      return { success: true, entry: stored, concepts: ex.concepts.length, claims: ex.claims.length, verification, mode: ex.mode };
+      this.db.logOp('ingest', { path, entry: stored.id, concepts: ex.concepts.length, claims: ex.claims.length, mode: ex.mode, conflicts: verification.conflicts.length, superseded: superseded.length });
+      return { success: true, entry: stored, concepts: ex.concepts.length, claims: ex.claims.length, verification, mode: ex.mode, superseded };
     });
   }
 
