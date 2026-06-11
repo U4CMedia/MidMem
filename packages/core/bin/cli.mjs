@@ -21,7 +21,7 @@ try {
     case 'bridge': { const { bridgeMemory } = await import('../src/bridge.mjs'); out(await bridgeMemory(o)); break; }
     case 'handoff': out(await o.handoffBrief({ task: pos.join(' '), profile: flags.profile || 'local', scopes: flags.scopes?.split(','), tiers: flags.tiers?.split(',') })); break;
     case 'recall': out(o.recall(pos[0])); break;
-    case 'brief': out(o.brief()); break;
+    case 'brief': out(await o.brief()); break;
     case 'lint': out(o.lint()); break;
     case 'project': out(o.project()); break;
     case 'promote': out(await o.promote(pos[0], pos[1], { curated: !!flags.curated })); break;

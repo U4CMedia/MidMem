@@ -62,7 +62,7 @@ try {
   ok(fs.existsSync(path.join(proj.vaultPath, 'index.md')), 'index.md projected');
 
   // 8. Brief
-  const b = o.brief();
+  const b = await o.brief();
   ok(b.tiers.memory >= 1 && b.tiers.fact >= 1, `brief reports tier counts: ${JSON.stringify(b.tiers)}`);
   ok(b.vectors?.backend === 'sqlite', `vector backend reported via brief: ${b.vectors?.backend}`);
 
@@ -118,6 +118,34 @@ try {
     'frontier hand-off brief: provenance/trust + invites pull');
   const hbEmpty = await o.handoffBrief({ task: 'anything', profile: 'local', scopes: ['void_scope'] });
   ok(hbEmpty.count === 0 && /no prior knowledge/i.test(hbEmpty.brief), 'empty hand-off brief degrades cleanly');
+
+  // 16. Archive default spares permanent tiers (wisdom must survive a routine archive)
+  const oldWisdom = await o.storeMemory({ content: 'Ancient curated wisdom entry.', tier: 'wisdom', type: 'note', curated: true });
+  o.db.prepare("UPDATE entries SET updated_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(oldWisdom.id);
+  o.archive({ olderThanMs: 1 * 864e5 });
+  ok(o.recall(oldWisdom.id).status === 'active', 'default archive leaves ttl-0 (wisdom) entries active');
+  o.archive({ olderThanMs: 1 * 864e5, tiers: ['wisdom'] });
+  ok(o.recall(oldWisdom.id).status === 'archived', 'explicit tiers:[wisdom] still archives it');
+
+  // 17. Failed ingest must not poison the dedup hash (sources row commits with the entry)
+  const poison = path.join(tmp, 'poison.md');
+  fs.writeFileSync(poison, 'Content whose first ingest attempt fails must remain ingestable.');
+  const origStore = o.memory.store.bind(o.memory);
+  o.memory.store = () => { throw new Error('injected store failure'); };
+  let ingestFailed = false;
+  try { await o.ingest({ path: poison, type: 'note' }); } catch { ingestFailed = true; }
+  o.memory.store = origStore;
+  ok(ingestFailed, 'injected ingest failure propagated');
+  const retry = await o.ingest({ path: poison, type: 'note' });
+  ok(retry.success && !retry.skipped, 'retry after failed ingest stores the content (hash not poisoned)');
+
+  // 18. Promote refreshes expires_at for the destination tier (single-write lifecycle)
+  const pr = await o.storeMemory({ content: 'Fact destined for wisdom.', tier: 'fact', type: 'note' });
+  ok(o.recall(pr.id).expires_at != null, 'fact entry starts with an expiry');
+  await o.promote(pr.id, 'wisdom', { curated: true });
+  const promoted = o.recall(pr.id);
+  ok(promoted.tier === 'wisdom' && promoted.status === 'active' && promoted.expires_at == null,
+    'promotion to wisdom clears expiry and stays active');
 
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
 } catch (e) {

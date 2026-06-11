@@ -40,15 +40,18 @@ export class Orchestrator {
       // Hash-dedup: re-ingesting an unchanged file is a no-op (makes the bridge/cron idempotent).
       const dup = this.db.prepare('SELECT id FROM sources WHERE hash=?').get(hash);
       if (dup) { this.db.logOp('ingest-skip', { path, hash, sourceId: dup.id }); return { success: true, skipped: true, reason: 'unchanged', sourceId: dup.id }; }
-      const sourceId = genId('src', path);
-      this.db.prepare('INSERT INTO sources(id,path,type,title,hash,ingested_at,metadata) VALUES(?,?,?,?,?,?,?)')
-        .run(sourceId, path, type, title || null, hash, nowISO(), JSON.stringify(metadata));
 
       const ex = await this.extractor.extract(text, type);
-      const prov = { originalSource: path, extractedAt: nowISO(), chain: [{ step: 'ingest', source: path }] };
-      const stored = this.db.tx(() =>
-        this.memory.store({ content: ex.summary, type: 'ingest', tier: 'memory', scope, sourceId, provenance: prov, concepts: ex.concepts }));
       const { vector, model, mode } = await this.embedder.embed(ex.summary);
+      const sourceId = genId('src', path);
+      const prov = { originalSource: path, extractedAt: nowISO(), chain: [{ step: 'ingest', source: path }] };
+      // Sources row (the dedup hash) commits WITH the entry: a failed ingest must not
+      // leave the hash behind, or re-ingests would be skipped as 'unchanged' forever.
+      const stored = this.db.tx(() => {
+        this.db.prepare('INSERT INTO sources(id,path,type,title,hash,ingested_at,metadata) VALUES(?,?,?,?,?,?,?)')
+          .run(sourceId, path, type, title || null, hash, nowISO(), JSON.stringify(metadata));
+        return this.memory.store({ content: ex.summary, type: 'ingest', tier: 'memory', scope, sourceId, provenance: prov, concepts: ex.concepts });
+      });
       await this.memory.upsertVector(stored.id, vector, model, mode);
 
       const nodeIds = ex.concepts.map((c) => this.graph.upsertNode({ type: c.type || 'concept', label: c.name, source: path, properties: { confidence: c.confidence } }));
@@ -93,13 +96,13 @@ export class Orchestrator {
 
   recall(id) { return this.memory.get(id); }
 
-  brief() {
+  async brief() {
     const g = this.graph.getGraph();
     return {
       tiers: this.memory.stats(),
       claims: this.claims.stats(),
       graph: { nodes: g.nodes.length, edges: g.edges.length },
-      vectors: this.memory.vectorHealth(),
+      vectors: await this.memory.vectorHealth(),
       recent: this.db.prepare('SELECT ts,operation FROM log ORDER BY id DESC LIMIT 10').all(),
     };
   }

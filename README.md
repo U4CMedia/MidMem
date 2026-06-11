@@ -9,8 +9,10 @@ It is the broker between AI agents and their knowledge: agents `ingest`, `query`
 through the router; the knowledge store sits *behind* it. Built for the OpenClaw + Hermes
 dual-stack, but usable by **either system alone or both together** (see [Integration](#integration)).
 
-> **Status:** foundation complete and tested (smoke 19/19). Runnable Node ESM, **zero external
-> dependencies** (Node ≥ 22.5 built-ins only: `node:sqlite`, `crypto`, `fetch`).
+> **Status:** foundation + cross-agent scope + native→middleware bridge + retrieval upgrades
+> (trust, trigram, token-budget, graph-boost, dim-guard) + selectable Qdrant vector backend +
+> hand-off memory gate. Tested (smoke **27/27**). Runnable Node ESM, **zero external dependencies**
+> (Node ≥ 22.5 built-ins only: `node:sqlite`, `crypto`, `fetch`).
 > `packages/core/` is the active foundation; the other `packages/*` are the superseded interim
 > scaffold, kept for reference only.
 
@@ -32,16 +34,19 @@ sources ──ingest──► LLM extract (concepts/claims/embeddings) ─┐  (
         └───────────────────────────────────────────────────────────────────────────────┘
               │ project (LLM-owned)                ▲ verify (deterministic, one graph)
               ▼                                    │
-        Obsidian vault (projection)   ── query: FTS5 ⊕ vector cosine (RRF) + provenance ──►
+        Obsidian vault (projection)  ── query: FTS5 ⊕ trigram ⊕ vector (RRF) + trust/graph boosts ──►
               ▲                                    │
-              └──────────── MCP server (10 tools) ─┴──► OpenClaw / Hermes
+              └──────────── MCP server (12 tools) ─┴──► OpenClaw / Hermes
 ```
 
 - **`state.db` is the source of truth**; the markdown vault is a deterministic projection of it.
-- **Hybrid retrieval**: SQLite FTS5/BM25 (lexical) fused with vector cosine (semantic) via
-  Reciprocal Rank Fusion. Vectors are incremental — lexical works standalone.
-- **Tiers**: `fact` (raw, 7d TTL) → `memory` (synthesized, 30d) → `wisdom` (curated, ∞).
+- **Hybrid retrieval**: SQLite FTS5/BM25 (token lexical) ⊕ FTS5-trigram (substring lexical) ⊕ vector
+  cosine (semantic), fused via Reciprocal Rank Fusion, plus trust + graph ref-chain boosts and an
+  optional token budget. Vectors are incremental — lexical works standalone.
+- **Vector backend is pluggable**: `sqlite` (in-DB JSON cosine, zero-dep, default) or `qdrant` (external ANN).
+- **Tiers**: `fact` (raw, 7d TTL) → `memory` (synthesized, 30d) → `wisdom` (curated, ∞), with trust scoring.
 - **Scope**: every entry is `openclaw` | `hermes` | `shared` — private working memory + a shared commons.
+- **Hand-off gate ("firstware")**: pushes a memory brief into an agent hand-off so the receiver can't overlook it.
 
 ---
 
@@ -54,8 +59,9 @@ an LLM Wiki middleware; **recommended** layers add capability and are safe to de
 |---|---|---|---|---|
 | **Integration / transport** | `bin/mcp-server.mjs` (MCP stdio) · `bin/cli.mjs` · `src/orchestrator.mjs` (API) | **Required** | The contract agents speak. MCP is primary; CLI + API are alternates. | register per stack (below) |
 | **Store** | `src/db.mjs` (`state.db`) | **Required** | Single source of truth + unified index. | `OCMW_DB_PATH`; move to a shared path/NAS |
-| **Retrieval** | `src/retrieval.mjs` | **Required** | Hybrid FTS5 ⊕ vector (RRF), provenance-bearing. | fusion weights, `rrfK` |
-| **Embedding** | `src/embeddings.mjs` | **Required\*** | Vectors for the semantic lane. *Deterministic fallback if no model.* | `OCMW_EMBED_MODEL`, `OCMW_LLM_ENDPOINT` |
+| **Retrieval** | `src/retrieval.mjs` | **Required** | Hybrid FTS5 ⊕ trigram ⊕ vector (RRF) + trust/graph boosts + token budget. | `fusionWeights`, `rrfK`, `trustWeight` |
+| **Vector store** | `src/vectorstore.mjs` | **Required** | Pluggable ANN: `sqlite` (default) \| `qdrant`. Holds id→vector; `state.db` keeps metadata. | `OCMW_VECTOR_BACKEND`, `OCMW_QDRANT_URL` |
+| **Embedding** | `src/embeddings.mjs` | **Required\*** | Vectors for the semantic lane + dimension guard. *Deterministic fallback if no model.* | `OCMW_EMBED_MODEL`, `OCMW_LLM_ENDPOINT` |
 | **Governance** | `src/governance.mjs` | **Required** | Fail-closed policy gating on every mutation. | extend `defaultPolicies()` |
 | **Tiered memory** | `src/memory.mjs` | Recommended | fact→memory→wisdom lifecycle (TTL, promote, archive). | `tiers` in config |
 | **Extraction** | `src/extract.mjs` | Recommended | LLM concept/claim extraction. *Heuristic fallback.* | `OCMW_EXTRACT_MODEL` |
@@ -65,6 +71,8 @@ an LLM Wiki middleware; **recommended** layers add capability and are safe to de
 | **Projection** | `src/project.mjs` | Recommended | Render `state.db` → Obsidian markdown. | `OBSIDIAN_VAULT_PATH`, `WIKI_PATH` |
 | **Scope** | (in store/retrieval/governance) | Required *for dual*, else optional | Multi-agent private + shared partitioning. | `OCMW_AGENT_SCOPE` |
 | **Bridge** | `src/bridge.mjs` (`ocmw bridge`) | Recommended | Pull each stack's flat native memory into the store. | `bridgeSources` |
+| **Trust / feedback** | (memory + retrieval) | Recommended | `trust_score` + usage/`feedback` loop; boosts ranking. | `trustWeight`, `feedback` tool |
+| **Hand-off gate** | `src/handoff.mjs` (`handoff_brief`) | Recommended | Push a scoped memory brief into an agent hand-off (firstware). | profiles `local` / `frontier` |
 
 \* The embedding layer is required for semantic recall, but the system **runs without a live model**
 via a deterministic hash embedder (lexical retrieval still works). Load a real model before
@@ -140,15 +148,16 @@ other's private scope. Concurrency across the two server processes is handled by
 ```bash
 # No install needed (Node ≥ 22.5 built-ins only).
 cd packages/core
-node test/smoke.mjs                         # end-to-end self-test (offline) → 19/19
+node test/smoke.mjs                         # end-to-end self-test (offline) → 27/27
 
 node bin/cli.mjs init                        # show resolved config
 node bin/cli.mjs ingest <file> --type note   # compile a source into the store
-node bin/cli.mjs query "..." --graph         # hybrid query + graph context
+node bin/cli.mjs query "..." --graph         # hybrid query (+ graph context, --maxTokens budget)
 node bin/cli.mjs remember "..." --scope shared
-node bin/cli.mjs brief                        # tier/claim/graph counts
+node bin/cli.mjs brief                        # tier/claim/graph + vector-health counts
 node bin/cli.mjs project                      # render the Obsidian vault
 node bin/cli.mjs bridge                       # pull native agent memory into the store
+node bin/cli.mjs handoff "<task>" --profile local|frontier   # build a hand-off memory brief
 ```
 
 ### MCP tools (12)
@@ -179,21 +188,22 @@ pull-depth). The gate *calls* the store; it doesn't replace it (firstware-on-mid
 ---
 
 ## Recommended embedding model
-`BAAI/bge-m3` (1024-dim, 8192-ctx, hybrid dense+sparse) — best fit for hybrid wiki RAG and
-ChromaDB. Lighter alternative: `nomic-embed-text-v1.5` (768-dim). Pick one **before first ingest**
-and keep it across any vector-store migration (no re-embedding).
+`BAAI/bge-m3` (1024-dim, 8192-ctx, hybrid dense+sparse) — best fit for hybrid wiki RAG and Qdrant.
+Lighter alternative: `nomic-embed-text-v1.5` (768-dim). Pick one **before first ingest** and keep
+it across any vector-store migration (no re-embedding; the dimension guard enforces consistency).
 
 ## Roadmap
-- Vector store → **ChromaDB** (swap `embeddings.mjs` + `memory` vector I/O + `retrieval`; same model).
+- Vector store → **Qdrant** (decided over ChromaDB; `OCMW_VECTOR_BACKEND=qdrant`, adapter built — validate against a live instance).
 - Vault → **NAS share** (change `OBSIDIAN_VAULT_PATH` only).
+- **Decay scanner + semantic near-dup report** (memory-os borrows; need the embed model loaded first).
 - **Fine-tuned-LLM `wisdom` tier** trained from curated wisdom (weight-space long-term memory).
-- TypeScript migration; bidirectional vault sync; automated promotion/dedup/consolidation.
+- Pre-LLM-call memory gate (per-turn brief, sibling to the hand-off gate); TypeScript migration; bidirectional vault sync.
 
 ## Repository layout
 ```
 packages/core/         # ← active foundation (this README describes it)
-  src/                 # db, memory, retrieval, embeddings, extract, graph, claims,
-                       # verify, governance, project, orchestrator, bridge, config
+  src/                 # db, memory, retrieval, vectorstore, embeddings, extract, graph, claims,
+                       # verify, governance, project, bridge, handoff, orchestrator, config
   bin/                 # cli.mjs, mcp-server.mjs
   test/smoke.mjs       # end-to-end self-test
 packages/{orchestrator,tiered-memory,obsidian-bridge,sigma-verifier,mcp-memory}/

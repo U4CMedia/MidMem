@@ -65,12 +65,12 @@ export class TieredMemory {
     return { success: true, id, trust_score: Number(trust.toFixed(3)), helpful };
   }
 
-  /** Vector store health: canonical dim + breakdown by dim + fallback count (dim-guard visibility). */
-  vectorHealth() {
+  /** Vector store health: canonical dim (dim-guard) + backend-specific counts.
+   *  Delegates to the active backend — the sqlite `vectors` table is empty under qdrant. */
+  async vectorHealth() {
     const canonical = this.db.prepare("SELECT value FROM meta WHERE key='vector_dim'").get()?.value;
-    const byDim = this.db.prepare('SELECT dim, COUNT(*) c FROM vectors GROUP BY dim').all();
-    const fallback = this.db.prepare("SELECT COUNT(*) c FROM vectors WHERE model LIKE 'fallback%'").get().c;
-    return { backend: this.cfg.vectorBackend, canonicalDim: canonical ? Number(canonical) : null, byDim: Object.fromEntries(byDim.map((r) => [r.dim, r.c])), fallbackVectors: fallback };
+    const health = await this.vectorStore.health();
+    return { ...health, canonicalDim: canonical ? Number(canonical) : null };
   }
 
   get(id) {
@@ -106,13 +106,15 @@ export class TieredMemory {
   }
 
   promote(id, toTier) {
-    if (!this.tier(toTier)) throw new Error(`unknown tier: ${toTier}`);
+    const tc = this.tier(toTier);
+    if (!tc) throw new Error(`unknown tier: ${toTier}`);
     const r = this.db.prepare('SELECT id FROM entries WHERE id=?').get(id);
     if (!r) return { success: false, message: `not found: ${id}` };
-    this.db.prepare("UPDATE entries SET tier=?, status='promoted', updated_at=? WHERE id=?")
-      .run(toTier, nowISO(), id);
-    // re-activate in the new tier (promoted marks the lifecycle event; keep searchable)
-    this.db.prepare("UPDATE entries SET status='active' WHERE id=?").run(id);
+    // Single write (one FTS trigger pass); expires_at follows the destination tier's TTL
+    // so e.g. a fact promoted to wisdom doesn't carry its 7-day expiry along.
+    const expiresAt = tc.ttl ? new Date(Date.now() + tc.ttl).toISOString() : null;
+    this.db.prepare("UPDATE entries SET tier=?, status='active', expires_at=?, updated_at=? WHERE id=?")
+      .run(toTier, expiresAt, nowISO(), id);
     return { success: true, message: `promoted ${id} → ${toTier}` };
   }
 
@@ -129,7 +131,10 @@ export class TieredMemory {
     return { success: true, message: `${soft ? 'soft-' : ''}deleted ${id}` };
   }
 
-  archive({ olderThanMs = 30 * 864e5, tiers = this.tierNames } = {}) {
+  archive({ olderThanMs = 30 * 864e5, tiers = null } = {}) {
+    // Default to expiring tiers only — never bulk-archive permanent (ttl 0) tiers
+    // like wisdom unless the caller names them explicitly.
+    if (!tiers || !tiers.length) tiers = this.cfg.tiers.filter((t) => t.ttl > 0).map((t) => t.name);
     const cutoff = new Date(Date.now() - olderThanMs).toISOString();
     const ph = tiers.map(() => '?').join(',');
     const info = this.db.prepare(`
