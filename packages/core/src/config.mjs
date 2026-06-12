@@ -40,9 +40,11 @@ export function loadConfig(overrides = {}) {
     openclawPath: process.env.OPENCLAW_VAULT_DIR || 'OpenClaw',
     hermesPath: process.env.HERMES_VAULT_DIR || 'Hermes',
     /** Raw sources allowed for ingest (path-traversal guard in governance).
-     *  Agents drop research into their vault folder; the router ingests it into the wiki. */
+     *  Agents drop research into their vault folder; the router ingests it into the wiki.
+     *  ~/changelog = frozen quarterly CHANGELOG archives (ingested once at archive time;
+     *  the live root CHANGELOG.md stays QMD-only — too churny for one-summary-per-version). */
     sourceRoots: (process.env.OCMW_SOURCE_ROOTS ||
-      [REPO, `${HOME}/.openclaw/workspace`, `${HOME}/.hermes/memories`, path.join(VAULT, 'OpenClaw'), path.join(VAULT, 'Hermes')].join(';')
+      [REPO, `${HOME}/.openclaw/workspace`, `${HOME}/.hermes/memories`, `${HOME}/changelog`, path.join(VAULT, 'OpenClaw'), path.join(VAULT, 'Hermes')].join(';')
     ).split(';').filter(Boolean),
     /** Native→middleware bridge: dirs scanned by `bridgeMemory`, each tagged with a scope.
      *  Pulls each stack's flat memory into the shared, tiered, searchable store. */
