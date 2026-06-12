@@ -34,7 +34,7 @@ export class Orchestrator {
 
   /** Ingest a raw source: extract → store (memory tier) → embed → graph → claims → verify. */
   async ingest({ path, type = 'note', title, metadata = {}, curated = false, scope = this.cfg.agentScope }) {
-    return governed(this.gov, 'ingest', { path, type, scope, curated }, async () => {
+    const r = await governed(this.gov, 'ingest', { path, type, scope, curated }, async () => {
       const text = await fs.readFile(path, 'utf8');
       const hash = sha12(text);
       // Hash-dedup: re-ingesting an unchanged file is a no-op (makes the bridge/cron idempotent).
@@ -70,30 +70,80 @@ export class Orchestrator {
 
       const verification = this.verifier.verifyConcepts(ex.concepts);
       this.db.logOp('ingest', { path, entry: stored.id, concepts: ex.concepts.length, claims: ex.claims.length, mode: ex.mode, conflicts: verification.conflicts.length, superseded: superseded.length });
+      this.#markVaultDirty();
       return { success: true, entry: stored, concepts: ex.concepts.length, claims: ex.claims.length, verification, mode: ex.mode, superseded };
     });
+    await this.#maybeMaintain();
+    return r;
   }
 
   /** The MCP `remember` op — store a memory directly. */
   async storeMemory({ content, type = 'insight', tier = 'memory', scope = this.cfg.agentScope, source, concepts, curated = false }) {
-    return governed(this.gov, 'store', { tier, scope, curated }, async () => {
+    const r = await governed(this.gov, 'store', { tier, scope, curated }, async () => {
       const prov = source ? { originalSource: source.path, extractedAt: nowISO(), chain: [{ step: 'remember', source: source.path }] } : null;
       const stored = this.db.tx(() => this.memory.store({ content, type, tier, scope, provenance: prov, concepts }));
       const { vector, model, mode } = await this.embedder.embed(content);
       await this.memory.upsertVector(stored.id, vector, model, mode);
       if (concepts) for (const c of concepts) this.graph.upsertNode({ type: c.type || 'concept', label: c.name, source: 'remember' });
       this.db.logOp('remember', { entry: stored.id, tier });
+      this.#markVaultDirty();
       return { success: true, ...stored };
     });
+    await this.#maybeMaintain();
+    return r;
   }
 
   async query(question, opts = {}) {
     const scopes = opts.scopes || this.#defaultScopes();
     const results = await hybridSearch(this.db, this.memory, this.embedder, question, { ...opts, scopes });
-    this.memory.recordRetrieval(results.map((r) => r.id)); // usage signal feeds trust/decay
+    this.memory.recordRetrieval(results.map((r) => r.id)); // usage signal feeds trust/decay (+ lease renewal)
     const graphContext = opts.includeGraphContext ? this.#graphContext(question) : null;
+    await this.#maybeMaintain();
     return { query: question, results, scopes, graphContext, tiers: opts.tiers || this.memory.tierNames, timestamp: nowISO() };
   }
+
+  /**
+   * Self-driving lifecycle pass — the user never has to remember to decay or promote.
+   * Runs opportunistically on normal use (query/ingest/remember), throttled to one pass
+   * per maintenance.intervalMs across all processes sharing state.db; a daily timer with
+   * force:true covers idle periods. Steps: sweep decay (expired leases + distrusted
+   * entries) → auto-promote usage-earned entries → reproject the vault if anything
+   * (including earlier mutations) left it stale.
+   */
+  async maintain({ force = false } = {}) {
+    const m = this.cfg.maintenance || {};
+    if (!m.enabled && !force) return { skipped: true, reason: 'disabled' };
+    const now = Date.now();
+    const last = Number(this.db.prepare("SELECT value FROM meta WHERE key='last_maintenance_at'").get()?.value || 0);
+    if (!force && now - last < m.intervalMs) return { skipped: true, reason: 'not_due', nextDueMs: m.intervalMs - (now - last) };
+    this.db.prepare("INSERT INTO meta(key,value) VALUES('last_maintenance_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(now));
+
+    const swept = this.memory.sweepLifecycle({ distrustBelow: m.distrustBelow ?? 0 });
+    const promoted = [];
+    for (const c of this.memory.autoPromoteCandidates(m)) {
+      // Governance still gates each promotion — a veto stands, the rest proceed.
+      try { await this.promote(c.id, c.to, { curated: c.curated }); promoted.push(c); } catch { /* vetoed */ }
+    }
+    if (swept.expired.length || swept.distrusted.length) this.#markVaultDirty();
+
+    let projected = null;
+    if (this.#vaultDirty()) {
+      // Vault is a projection on possibly-remote storage — its failure must not fail maintenance.
+      try { projected = this.project(); } catch (e) { projected = { error: e.message }; }
+    }
+    const summary = { swept, promoted, projected, forced: force };
+    this.db.logOp('maintain', summary);
+    return summary;
+  }
+
+  /** Lazy maintenance hook — cheap when not due; never breaks the primary op. */
+  async #maybeMaintain() {
+    if (!this.cfg.maintenance?.enabled) return;
+    try { await this.maintain(); } catch { /* maintenance is best-effort */ }
+  }
+
+  #markVaultDirty() { this.db.prepare("INSERT INTO meta(key,value) VALUES('vault_dirty','1') ON CONFLICT(key) DO UPDATE SET value='1'").run(); }
+  #vaultDirty() { return this.db.prepare("SELECT value FROM meta WHERE key='vault_dirty'").get()?.value === '1'; }
 
   /** Feedback loop — caller marks a recalled entry helpful/unhelpful (nudges trust_score). */
   feedback(id, helpful = true) { const r = this.memory.recordFeedback(id, helpful); this.db.logOp('feedback', { id, helpful }); return r; }
@@ -126,16 +176,21 @@ export class Orchestrator {
   }
 
   async forget(id, { soft = true, force = false } = {}) {
-    return governed(this.gov, 'forget', { soft, force }, async () => { const r = await this.memory.forget(id, { soft }); this.db.logOp('forget', { id, soft }); return r; });
+    return governed(this.gov, 'forget', { soft, force }, async () => { const r = await this.memory.forget(id, { soft }); this.db.logOp('forget', { id, soft }); this.#markVaultDirty(); return r; });
   }
 
-  archive(opts = {}) { const r = this.memory.archive(opts); this.db.logOp('archive', r); return r; }
+  archive(opts = {}) { const r = this.memory.archive(opts); this.db.logOp('archive', r); if (r.archived) this.#markVaultDirty(); return r; }
 
   async promote(id, toTier, { curated = false } = {}) {
-    return governed(this.gov, 'promote', { toTier, curated }, () => { const r = this.memory.promote(id, toTier); this.db.logOp('promote', { id, toTier }); return r; });
+    return governed(this.gov, 'promote', { toTier, curated }, () => { const r = this.memory.promote(id, toTier); this.db.logOp('promote', { id, toTier }); this.#markVaultDirty(); return r; });
   }
 
-  project() { const r = projectVault(this.db, this.memory, this.graph, this.cfg); this.db.logOp('project', r); return r; }
+  project() {
+    const r = projectVault(this.db, this.memory, this.graph, this.cfg);
+    this.db.logOp('project', r);
+    this.db.prepare("INSERT INTO meta(key,value) VALUES('vault_dirty','0') ON CONFLICT(key) DO UPDATE SET value='0'").run();
+    return r;
+  }
 
   getGraph() { return this.graph.getGraph(); }
   searchClaims(q, opts) { return this.claims.search(q, opts); }

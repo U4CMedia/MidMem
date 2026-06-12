@@ -41,6 +41,7 @@ const TOOLS = {
   archive: { description: 'Archive entries older than N days.', schema: S({ olderThanDays: { type: 'number' }, tiers: { type: 'array', items: { type: 'string' } } }), run: (a) => o.archive({ olderThanMs: (a.olderThanDays ?? 30) * 864e5, tiers: a.tiers }) },
   promote: { description: 'Promote an entry to another tier (wisdom requires curated:true).', schema: S({ entryId: { type: 'string' }, toTier: { type: 'string' }, curated: { type: 'boolean' } }, ['entryId', 'toTier']), run: (a) => o.promote(a.entryId, a.toTier, { curated: !!a.curated }) },
   project: { description: 'Project state.db to the Obsidian vault.', schema: S({}), run: () => o.project() },
+  maintain: { description: 'Run the lifecycle pass now (decay sweep + usage-earned promotion + vault reprojection). Normally automatic — runs opportunistically on query/ingest/remember and via the daily timer; force:true bypasses the hourly throttle.', schema: S({ force: { type: 'boolean' } }), run: (a) => o.maintain({ force: !!a.force }) },
 };
 
 function reply(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n'); }

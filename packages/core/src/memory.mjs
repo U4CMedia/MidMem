@@ -47,12 +47,22 @@ export class TieredMemory {
     await this.vectorStore.upsert({ id: entryId, embedding, model });
   }
 
-  /** Bump retrieval_count + last_accessed_at for entries that were returned (usage signal). */
+  /** Bump retrieval_count + last_accessed_at for entries that were returned (usage signal).
+   *  When maintenance.refreshOnAccess is on, retrieval also RENEWS the entry's lease
+   *  (expires_at = now + tier TTL): entries that keep getting used keep living;
+   *  entries nobody asks about expire on their tier's TTL (decay-by-disuse). */
   recordRetrieval(ids) {
     if (!ids?.length) return;
     const ts = nowISO();
-    const stmt = this.db.prepare('UPDATE entries SET retrieval_count = retrieval_count + 1, last_accessed_at = ? WHERE id = ?');
-    for (const id of ids) stmt.run(ts, id);
+    const refresh = this.cfg.maintenance?.refreshOnAccess !== false;
+    const bump = this.db.prepare('UPDATE entries SET retrieval_count = retrieval_count + 1, last_accessed_at = ? WHERE id = ?');
+    const renew = this.db.prepare('UPDATE entries SET expires_at = ? WHERE id = ?');
+    for (const id of ids) {
+      bump.run(ts, id);
+      if (!refresh) continue;
+      const tier = this.tier(this.db.prepare('SELECT tier FROM entries WHERE id=?').get(id)?.tier);
+      if (tier?.ttl) renew.run(new Date(Date.now() + tier.ttl).toISOString(), id);
+    }
   }
 
   /** Feedback loop: nudge trust_score (and helpful_count) up/down. Clamped to [0,1]. */
@@ -78,10 +88,11 @@ export class TieredMemory {
     return r ? this.#hydrate(r) : null;
   }
 
-  /** Active entries, optionally filtered by tier and scope. */
+  /** Active entries, optionally filtered by tier and scope. Expired-but-unswept
+   *  entries are excluded — an expired lease is dead even before maintenance runs. */
   listActive({ tiers = this.tierNames, scopes = null } = {}) {
-    const conds = ["status='active'", `tier IN (${tiers.map(() => '?').join(',')})`];
-    const params = [...tiers];
+    const conds = ["status='active'", '(expires_at IS NULL OR expires_at > ?)', `tier IN (${tiers.map(() => '?').join(',')})`];
+    const params = [nowISO(), ...tiers];
     if (scopes && scopes.length) { conds.push(`scope IN (${scopes.map(() => '?').join(',')})`); params.push(...scopes); }
     return this.db.prepare(`SELECT * FROM entries WHERE ${conds.join(' AND ')}`).all(...params).map((r) => this.#hydrate(r));
   }
@@ -95,8 +106,8 @@ export class TieredMemory {
 
   /** Vectors for active entries in the given tiers/scopes: [{id, tier, vector}]. */
   activeVectors(tiers = this.tierNames, scopes = null) {
-    const conds = ["e.status='active'", `e.tier IN (${tiers.map(() => '?').join(',')})`];
-    const params = [...tiers];
+    const conds = ["e.status='active'", '(e.expires_at IS NULL OR e.expires_at > ?)', `e.tier IN (${tiers.map(() => '?').join(',')})`];
+    const params = [nowISO(), ...tiers];
     if (scopes && scopes.length) { conds.push(`e.scope IN (${scopes.map(() => '?').join(',')})`); params.push(...scopes); }
     return this.db.prepare(`
       SELECT v.entry_id id, e.tier tier, v.embedding emb
@@ -129,6 +140,51 @@ export class TieredMemory {
       this.db.prepare('DELETE FROM entries WHERE id=?').run(id);
     }
     return { success: true, message: `${soft ? 'soft-' : ''}deleted ${id}` };
+  }
+
+  /** Lifecycle sweep (decay): archive entries whose lease expired, plus entries the
+   *  feedback loop has buried (trust below the distrust floor) in non-permanent tiers.
+   *  Permanent (ttl 0) tiers like wisdom are untouched by both rules. */
+  sweepLifecycle({ distrustBelow = 0 } = {}) {
+    const ts = nowISO();
+    const expired = this.db.prepare(`
+      UPDATE entries SET status='archived', updated_at=? WHERE status='active' AND expires_at IS NOT NULL AND expires_at <= ?
+      RETURNING id
+    `).all(ts, ts).map((r) => r.id);
+    let distrusted = [];
+    if (distrustBelow > 0) {
+      const ttlTiers = this.cfg.tiers.filter((t) => t.ttl > 0).map((t) => t.name);
+      distrusted = this.db.prepare(`
+        UPDATE entries SET status='archived', updated_at=? WHERE status='active' AND trust_score < ? AND tier IN (${ttlTiers.map(() => '?').join(',')})
+        RETURNING id
+      `).all(ts, distrustBelow, ...ttlTiers).map((r) => r.id);
+    }
+    return { expired, distrusted };
+  }
+
+  /** Promotion candidates earned through use (consumes the tiers' autoPromote flag).
+   *  fact→memory: enough retrievals OR risen trust. memory→wisdom: explicit helpful
+   *  feedback (minHelpful) + sustained use — that feedback IS the curation signal. */
+  autoPromoteCandidates(maint) {
+    const next = Object.fromEntries(this.tierNames.map((t, i) => [t, this.tierNames[i + 1]]));
+    const out = [];
+    for (const tc of this.cfg.tiers) {
+      if (!tc.autoPromote || !next[tc.name]) continue;
+      const target = this.tier(next[tc.name]);
+      const rule = target.curatedOnly ? maint.wisdomPromote : maint.factPromote;
+      const conds = ["status='active'", 'tier = ?'];
+      const params = [tc.name];
+      if (target.curatedOnly) {
+        conds.push('retrieval_count >= ?', 'trust_score >= ?', 'helpful_count >= ?');
+        params.push(rule.minRetrievals, rule.minTrust, rule.minHelpful);
+      } else {
+        conds.push('(retrieval_count >= ? OR trust_score >= ?)');
+        params.push(rule.minRetrievals, rule.minTrust);
+      }
+      for (const r of this.db.prepare(`SELECT id FROM entries WHERE ${conds.join(' AND ')}`).all(...params))
+        out.push({ id: r.id, from: tc.name, to: target.name, curated: target.curatedOnly });
+    }
+    return out;
   }
 
   archive({ olderThanMs = 30 * 864e5, tiers = null } = {}) {

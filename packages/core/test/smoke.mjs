@@ -162,6 +162,55 @@ try {
   ok(rev3.skipped === true && o.recall(rev2.entry.id).status === 'active',
     'unchanged reingest still dedups and supersedes nothing');
 
+  // 26. Self-driving lifecycle: decay (lease expiry, lease renewal, distrust) + usage-earned promotion.
+  const lo = new Orchestrator({
+    dbPath: path.join(tmp, 'lifecycle.db'), vaultPath: path.join(tmp, 'vault2'), llmEnabled: false, sourceRoots: [tmp],
+    tiers: [
+      { name: 'fact', ttl: 100, autoPromote: true, curatedOnly: false }, // 100ms lease for the test
+      { name: 'memory', ttl: 60_000, autoPromote: true, curatedOnly: false },
+      { name: 'wisdom', ttl: 0, autoPromote: false, curatedOnly: true },
+    ],
+    maintenance: { enabled: true, intervalMs: 0, refreshOnAccess: true, distrustBelow: 0.2, factPromote: { minRetrievals: 3, minTrust: 0.6 }, wisdomPromote: { minRetrievals: 5, minTrust: 0.7, minHelpful: 2 } },
+  });
+
+  const dying = await lo.storeMemory({ content: 'ephemeral quokka migration sighting', tier: 'fact', type: 'note' });
+  const renewing = await lo.storeMemory({ content: 'renewable goose telemetry beacon', tier: 'fact', type: 'note' });
+  const expBefore = lo.recall(renewing.id).expires_at;
+  await new Promise((r) => setTimeout(r, 10));
+  const rq = await lo.query('renewable goose telemetry', { limit: 5 });
+  ok(rq.results.some((x) => x.id === renewing.id), 'lifecycle: entry retrievable before its lease expires');
+  ok(lo.recall(renewing.id).expires_at > expBefore, 'retrieval renews the lease (decay-by-disuse)');
+
+  await new Promise((r) => setTimeout(r, 120)); // both fact leases lapse (no further use)
+  const xq = await lo.query('ephemeral quokka migration', { limit: 5 });
+  ok(!xq.results.some((x) => x.id === dying.id), 'expired entry excluded from retrieval even before a sweep');
+  ok(lo.recall(dying.id).status === 'archived',
+    'lazy maintenance hooked to the query swept the expired lease (no explicit maintain call)');
+
+  const hero = await lo.storeMemory({ content: 'frequently used wombat routing heuristic', tier: 'fact', type: 'note' });
+  lo.db.prepare('UPDATE entries SET retrieval_count=3 WHERE id=?').run(hero.id);
+  const mt2 = await lo.maintain({ force: true });
+  ok(mt2.promoted.some((p) => p.id === hero.id && p.to === 'memory') && lo.recall(hero.id).tier === 'memory',
+    'well-used fact auto-promotes to memory');
+  ok(mt2.projected && typeof mt2.projected.written === 'number', 'maintain auto-projects the vault when state changed');
+
+  lo.db.prepare('UPDATE entries SET retrieval_count=6, trust_score=0.75, helpful_count=2 WHERE id=?').run(hero.id);
+  const mt3 = await lo.maintain({ force: true });
+  ok(mt3.promoted.some((p) => p.id === hero.id && p.to === 'wisdom' && p.curated) && lo.recall(hero.id).tier === 'wisdom',
+    'helpful-feedback memory auto-promotes to wisdom (usage-earned curation)');
+  ok(lo.recall(hero.id).expires_at == null, 'auto-promotion to wisdom clears the lease (permanent tier)');
+
+  const distrusted = await lo.storeMemory({ content: 'repeatedly wrong pelican advice', tier: 'memory', type: 'note' });
+  lo.db.prepare('UPDATE entries SET trust_score=0.1 WHERE id=?').run(distrusted.id);
+  const mt4 = await lo.maintain({ force: true });
+  ok(mt4.swept.distrusted.includes(distrusted.id) && lo.recall(distrusted.id).status === 'archived',
+    'distrusted entry (negative feedback) decays to archived');
+
+  lo.cfg.maintenance.intervalMs = 3600e3;
+  const mt5 = await lo.maintain();
+  ok(mt5.skipped === true && mt5.reason === 'not_due', 'maintain throttles between intervals (lazy hook stays cheap)');
+  lo.close();
+
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
 } catch (e) {
   console.error('\nFATAL:', e.stack); fail++;

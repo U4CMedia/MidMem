@@ -10,11 +10,12 @@
  */
 import { ftsMatchExpr } from './util.mjs';
 
-/** One FTS lane (token or trigram), scope/tier filtered. Returns ranked entry ids. */
+/** One FTS lane (token or trigram), scope/tier filtered. Returns ranked entry ids.
+ *  Expired leases are filtered here too — decay holds even between maintenance sweeps. */
 function ftsLane(db, table, expr, tiers, scoped, limit = 200) {
   if (!expr) return [];
-  const conds = ["e.status='active'", `e.tier IN (${tiers.map(() => '?').join(',')})`];
-  const params = [expr, ...tiers];
+  const conds = ["e.status='active'", '(e.expires_at IS NULL OR e.expires_at > ?)', `e.tier IN (${tiers.map(() => '?').join(',')})`];
+  const params = [expr, new Date().toISOString(), ...tiers];
   if (scoped) { conds.push(`e.scope IN (${scoped.map(() => '?').join(',')})`); params.push(...scoped); }
   return db.prepare(`
     SELECT e.id id FROM ${table} JOIN entries e ON e.rowid = ${table}.rowid
@@ -26,8 +27,8 @@ function ftsLane(db, table, expr, tiers, scoped, limit = 200) {
 /** Filter vector-store candidate ids against live entries (state.db is the metadata authority). */
 function filterActiveIds(db, ids, tiers, scoped) {
   if (!ids.length) return new Set();
-  const conds = [`id IN (${ids.map(() => '?').join(',')})`, "status='active'", `tier IN (${tiers.map(() => '?').join(',')})`];
-  const params = [...ids, ...tiers];
+  const conds = [`id IN (${ids.map(() => '?').join(',')})`, "status='active'", '(expires_at IS NULL OR expires_at > ?)', `tier IN (${tiers.map(() => '?').join(',')})`];
+  const params = [...ids, new Date().toISOString(), ...tiers];
   if (scoped) { conds.push(`scope IN (${scoped.map(() => '?').join(',')})`); params.push(...scoped); }
   return new Set(db.prepare(`SELECT id FROM entries WHERE ${conds.join(' AND ')}`).all(...params).map((r) => r.id));
 }

@@ -76,6 +76,20 @@ export function loadConfig(overrides = {}) {
     qdrantCollection: process.env.OCMW_QDRANT_COLLECTION || 'openduck_memory',
     qdrantApiKey: process.env.OCMW_QDRANT_API_KEY || '',
     tiers: DEFAULT_TIERS,
+    /** Self-driving lifecycle (decay + promotion) — runs opportunistically on normal use
+     *  (query/ingest/remember), throttled by intervalMs, plus an external daily timer.
+     *  Decay: expired leases archived; retrieval renews an entry's lease (decay-by-disuse);
+     *  repeatedly-unhelpful entries (trust < distrustBelow) archived. Promotion: fact→memory
+     *  on usage alone; memory→wisdom only when EARNED via explicit helpful feedback (that
+     *  feedback is the curation signal — the curated-only gate stays meaningful). */
+    maintenance: {
+      enabled: process.env.OCMW_MAINTENANCE !== '0',
+      intervalMs: Number(process.env.OCMW_MAINT_INTERVAL_MS || 3600e3), // lazy sweep ≤ 1/hour
+      refreshOnAccess: true, // retrieval extends expires_at by the tier's TTL
+      distrustBelow: 0.2, // archive non-permanent entries the feedback loop has buried
+      factPromote: { minRetrievals: 3, minTrust: 0.6 }, // fact→memory: proven useful by use
+      wisdomPromote: { minRetrievals: 5, minTrust: 0.7, minHelpful: 2 }, // memory→wisdom: earned curation
+    },
     /** Default memory scope for this process: `openclaw` | `hermes` | `shared`.
      *  Set per MCP registration (OCMW_AGENT_SCOPE). Writes default here; reads = this + shared.
      *  `shared` = admin/bridge context (may write any scope). */
