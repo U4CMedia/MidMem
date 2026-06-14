@@ -211,6 +211,19 @@ try {
   ok(mt5.skipped === true && mt5.reason === 'not_due', 'maintain throttles between intervals (lazy hook stays cheap)');
   lo.close();
 
+  // 27. Phase-1 trigger-less recall: self-gating + budget + surfaced-only lease renewal.
+  await o.storeMemory({ content: 'The reciprocal rank fusion constant k defaults to 60 in the retrieval layer.', tier: 'memory', type: 'note' });
+  const relevant = await o.proactiveRecall('how does reciprocal rank fusion scoring work', { minScore: 0.01 });
+  ok(relevant.inject && /fusion|rank/i.test(relevant.inject), 'proactiveRecall surfaces an inject block for a relevant message');
+  ok(relevant.used.length > 0, `proactiveRecall returned ${relevant.used.length} surfaced id(s)`);
+  const irrelevant = await o.proactiveRecall('quokka marsupial breakfast cereal coupons', { minScore: 0.5 });
+  ok(irrelevant.inject === null && irrelevant.used.length === 0, 'proactiveRecall injects nothing when nothing clears the threshold (cheap on irrelevant turns)');
+  // surfaced-only renewal: a lexically-unrelated entry stays below the threshold, so its lease is untouched
+  const untouched = await o.storeMemory({ content: 'isolated penguin telemetry note', tier: 'fact', type: 'note' });
+  const leaseBefore = o.recall(untouched.id).expires_at;
+  await o.proactiveRecall('reciprocal rank fusion', { minScore: 0.03 });
+  ok(o.recall(untouched.id).expires_at === leaseBefore, 'proactiveRecall does not renew leases for entries it did not surface');
+
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
 } catch (e) {
   console.error('\nFATAL:', e.stack); fail++;

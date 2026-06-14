@@ -76,6 +76,15 @@ export function loadConfig(overrides = {}) {
     qdrantCollection: process.env.OCMW_QDRANT_COLLECTION || 'openduck_memory',
     qdrantApiKey: process.env.OCMW_QDRANT_API_KEY || '',
     tiers: DEFAULT_TIERS,
+    /** Phase 1 trigger-less recall: pre-turn hook calls `proactiveRecall(message)` which self-gates
+     *  on `minScore` and caps injection at `maxTokens`. minScore is conservative by default (skip
+     *  unless a real match); it's the seam for later feedback-driven self-tuning. */
+    proactiveRecall: {
+      enabled: process.env.OCMW_PROACTIVE_RECALL !== '0',
+      minScore: Number(process.env.OCMW_RECALL_MIN_SCORE || 0.02),
+      maxTokens: Number(process.env.OCMW_RECALL_MAX_TOKENS || 600),
+      maxItems: Number(process.env.OCMW_RECALL_MAX_ITEMS || 4),
+    },
     /** Self-driving lifecycle (decay + promotion) — runs opportunistically on normal use
      *  (query/ingest/remember), throttled by intervalMs, plus an external daily timer.
      *  Decay: expired leases archived; retrieval renews an entry's lease (decay-by-disuse);

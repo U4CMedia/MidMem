@@ -103,6 +103,37 @@ export class Orchestrator {
   }
 
   /**
+   * Phase 1 of trigger-less recall: a self-gating, token-budgeted pre-turn primitive.
+   * Runs the hybrid search on the raw user message and returns a compact, provenance-tagged
+   * inject block ONLY when the top hit clears `minScore` — otherwise `{inject:null}` (near-zero
+   * cost on irrelevant turns). Designed to be called by a pre-turn hook so the model spends no
+   * tool-call cycle. Records retrieval ONLY for items actually surfaced, so proactively scanning
+   * every turn does not renew leases for things we merely considered (decay stays meaningful).
+   * Threshold/budget are env-tunable and are the seam for later self-tuning via `feedback`.
+   */
+  async proactiveRecall(message, opts = {}) {
+    const c = this.cfg.proactiveRecall || {};
+    if (c.enabled === false && !opts.force) return { inject: null, used: [], topScore: null, skipped: 'disabled' };
+    const minScore = opts.minScore ?? c.minScore ?? 0.02;
+    const maxTokens = opts.maxTokens ?? c.maxTokens ?? 600;
+    const maxItems = opts.maxItems ?? c.maxItems ?? 4;
+    const scopes = opts.scopes || this.#defaultScopes();
+    const results = await hybridSearch(this.db, this.memory, this.embedder, message, { scopes, maxTokens, limit: maxItems });
+    const passing = results.filter((r) => r.score >= minScore);
+    const topScore = results[0]?.score ?? null;
+    if (!passing.length) { this.db.logOp('proactive-recall', { injected: 0, topScore }); return { inject: null, used: [], topScore }; }
+    this.memory.recordRetrieval(passing.map((r) => r.id)); // only surfaced items count + renew
+    const oneLine = (s) => String(s).replace(/\s+/g, ' ').trim().slice(0, 200);
+    const lines = passing.map((r) => {
+      const src = r.provenance?.originalSource ? ` _(src: ${r.provenance.originalSource})_` : '';
+      return `- [${r.tier} · trust ${(r.trust ?? 0.5).toFixed(2)}] ${oneLine(r.content)}${src}`;
+    });
+    const inject = ['## Recalled knowledge (midmem — weigh by trust, may be partial)', ...lines].join('\n');
+    this.db.logOp('proactive-recall', { injected: passing.length, topScore });
+    return { inject, used: passing.map((r) => r.id), topScore };
+  }
+
+  /**
    * Self-driving lifecycle pass — the user never has to remember to decay or promote.
    * Runs opportunistically on normal use (query/ingest/remember), throttled to one pass
    * per maintenance.intervalMs across all processes sharing state.db; a daily timer with

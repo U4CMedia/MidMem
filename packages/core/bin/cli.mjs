@@ -26,8 +26,9 @@ try {
     case 'project': out(o.project()); break;
     case 'promote': out(await o.promote(pos[0], pos[1], { curated: !!flags.curated })); break;
     case 'maintain': out(await o.maintain({ force: !!flags.force })); break;
+    case 'recall-check': out(await o.proactiveRecall(pos.join(' '), { minScore: flags.minScore != null ? Number(flags.minScore) : undefined, maxTokens: flags.maxTokens != null ? Number(flags.maxTokens) : undefined, scopes: flags.scopes?.split(','), force: !!flags.force })); break;
     default:
-      out('Usage: ocmw <init|ingest <path>|remember <text>|query <text>|recall <id>|brief|lint|project|promote <id> <tier>|maintain|bridge|handoff <task>> [--type --title --tier --tiers --scope --scopes --limit --graph --curated --force --profile local|frontier]');
+      out('Usage: ocmw <init|ingest <path>|remember <text>|query <text>|recall <id>|recall-check <message>|brief|lint|project|promote <id> <tier>|maintain|bridge|handoff <task>> [--type --title --tier --tiers --scope --scopes --limit --minScore --maxTokens --graph --curated --force --profile local|frontier]');
   }
 } catch (e) { console.error('ERROR:', e.message); process.exitCode = 1; }
 finally { o.close(); }

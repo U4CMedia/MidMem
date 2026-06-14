@@ -42,6 +42,7 @@ const TOOLS = {
   promote: { description: 'Promote an entry to another tier (wisdom requires curated:true).', schema: S({ entryId: { type: 'string' }, toTier: { type: 'string' }, curated: { type: 'boolean' } }, ['entryId', 'toTier']), run: (a) => o.promote(a.entryId, a.toTier, { curated: !!a.curated }) },
   project: { description: 'Project state.db to the Obsidian vault.', schema: S({}), run: () => o.project() },
   maintain: { description: 'Run the lifecycle pass now (decay sweep + usage-earned promotion + vault reprojection). Normally automatic — runs opportunistically on query/ingest/remember and via the daily timer; force:true bypasses the hourly throttle.', schema: S({ force: { type: 'boolean' } }), run: (a) => o.maintain({ force: !!a.force }) },
+  proactive_recall: { description: 'Trigger-less pre-turn recall: run the budgeted hybrid search on a raw user message and return {inject} ONLY if results clear the relevance threshold (else inject:null). Call this from a pre-turn hook to surface stored knowledge without the model spending a tool-call cycle. Records retrieval only for surfaced items.', schema: S({ message: { type: 'string' }, minScore: { type: 'number' }, maxTokens: { type: 'number' }, scopes: { type: 'array', items: { type: 'string' } } }, ['message']), run: (a) => o.proactiveRecall(a.message, { minScore: a.minScore, maxTokens: a.maxTokens, scopes: a.scopes }) },
 };
 
 function reply(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n'); }
