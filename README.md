@@ -150,6 +150,8 @@ Two skills front the store; pick by how you're driving the stack:
 |---|---|---|---|
 | **`midmem-ops`** | OpenClaw (`workspace/skills/`) | the OpenClaw agent | recall / store / ingest / proactive-recall / feedback directly via the MCP tools |
 | **`hermes-build-orchestrator`** | Claude Code (`.claude/skills/`) | a frontier model (plan + QA); Hermes/qwen + gpt-5.5 build via kanban | multi-card builds with a QA gate per card |
+| **`midmem-orchestrator`** | **this repo** (`skills/`) | same loop, MidMem-specialized | bulk knowledge curation: batch ingest, re-ground, dedup, vault verify |
+| **`midmem-ingest-review`** | **this repo** (`skills/`) | a frontier model | ingest + audit knowledge quality and **cross-check OpenClaw vs Hermes understanding** (confabulation/drift/contradiction/scope) |
 
 - **OpenClaw only (Option A):** use **`midmem-ops`** — the OpenClaw agent operates memory itself
   (recall/store/ingest); no Hermes needed.
@@ -164,6 +166,8 @@ Two skills front the store; pick by how you're driving the stack:
 > QAs after every write (DELEGATE-52 mitigations); ingest applies a deterministic **grounding check**
 > so confabulated extractions never persist. Supporting Claude Code ops skills: `openduck-doctor`
 > (diagnostics/RCA), `openduck-record` (changelog+midmem+commit), `openduck-config`, `openduck-security-audit`.
+> The **MidMem Skills Library** (`skills/`, shipped with this repo) holds `midmem-orchestrator` +
+> `midmem-ingest-review` — symlink them into `~/.claude/skills/` (see `skills/README.md`).
 
 ---
 
