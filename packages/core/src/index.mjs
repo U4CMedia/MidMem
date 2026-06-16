@@ -10,6 +10,7 @@ export { ClaimStore } from './claims.mjs';
 export { SigmaVerifier } from './verify.mjs';
 export { PolicyEvaluator, GovernanceError, governed, defaultPolicies } from './governance.mjs';
 export { hybridSearch } from './retrieval.mjs';
+export { checkGrounding, groundingScore } from './grounding.mjs';
 export { projectVault } from './project.mjs';
 export { bridgeMemory } from './bridge.mjs';
 export { makeVectorStore, SqliteVectorStore, QdrantVectorStore } from './vectorstore.mjs';

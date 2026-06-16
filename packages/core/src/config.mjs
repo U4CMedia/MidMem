@@ -76,6 +76,13 @@ export function loadConfig(overrides = {}) {
     qdrantCollection: process.env.OCMW_QDRANT_COLLECTION || 'openduck_memory',
     qdrantApiKey: process.env.OCMW_QDRANT_API_KEY || '',
     tiers: DEFAULT_TIERS,
+    /** DELEGATE-52 safeguard: deterministically verify LLM-extracted concepts/claims appear in the
+     *  source before they enter state.db (quarantine confabulated/drifted extractions). minOverlap =
+     *  fraction of an item's content-words that must occur in the source. enabled:false → no-op. */
+    grounding: {
+      enabled: process.env.OCMW_GROUNDING !== '0',
+      minOverlap: Number(process.env.OCMW_GROUNDING_MIN_OVERLAP || 0.5),
+    },
     /** Phase 1 trigger-less recall: pre-turn hook calls `proactiveRecall(message)` which self-gates
      *  on `minScore` and caps injection at `maxTokens`. minScore is conservative by default (skip
      *  unless a real match); it's the seam for later feedback-driven self-tuning. */

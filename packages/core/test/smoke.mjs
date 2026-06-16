@@ -5,7 +5,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { Orchestrator, GovernanceError } from '../src/index.mjs';
+import { Orchestrator, GovernanceError, checkGrounding, groundingScore } from '../src/index.mjs';
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; console.log(`  ✓ ${msg}`); } else { fail++; console.log(`  ✗ ${msg}`); } };
@@ -223,6 +223,26 @@ try {
   const leaseBefore = o.recall(untouched.id).expires_at;
   await o.proactiveRecall('reciprocal rank fusion', { minScore: 0.03 });
   ok(o.recall(untouched.id).expires_at === leaseBefore, 'proactiveRecall does not renew leases for entries it did not surface');
+
+  // 28. Extraction grounding (DELEGATE-52 safeguard): deterministic, quarantines confabulation.
+  const gsrc = 'Cats are small domesticated mammals that purr and hunt mice in the garden.';
+  const gsplit = checkGrounding(gsrc, [
+    { content: 'Cats hunt mice' },                                  // grounded
+    { content: 'Quantum entanglement enables faster-than-light teleportation' }, // confabulated
+  ], (x) => x.content, 0.5);
+  ok(gsplit.grounded.length === 1 && /cats/i.test(gsplit.grounded[0].content), 'grounding keeps a source-grounded claim');
+  ok(gsplit.ungrounded.length === 1 && /quantum/i.test(gsplit.ungrounded[0].content), 'grounding quarantines a confabulated claim');
+  ok(gsplit.grounded[0].groundingScore === 1, 'grounded claim scores 1.0');
+  ok(groundingScore(gsrc, 'teleportation quantum') === 0, 'fully-ungrounded phrase scores 0');
+  ok(groundingScore(gsrc, 'the of a to') === 1, 'all-stopword phrase is treated as grounded (1.0)');
+
+  // ingest integration: result carries a grounding report; offline-fallback claims are source
+  // sentences, so nothing is quarantined on a normal doc.
+  const gfile = path.join(tmp, 'grounding-src.md');
+  fs.writeFileSync(gfile, 'Reciprocal rank fusion merges ranked lists. Vector cosine similarity scores embeddings. The collector reads systemd and produces a status snapshot.');
+  const ging = await o.ingest({ path: gfile, type: 'note' });
+  ok(ging.grounding && typeof ging.grounding.summaryScore === 'number', `ingest returns a grounding report (summaryScore=${ging.grounding?.summaryScore})`);
+  ok(ging.grounding.claimsQuarantined === 0, 'a faithful doc quarantines no claims');
 
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
 } catch (e) {

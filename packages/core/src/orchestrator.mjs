@@ -14,6 +14,7 @@ import { SigmaVerifier } from './verify.mjs';
 import { PolicyEvaluator, governed } from './governance.mjs';
 import { projectVault } from './project.mjs';
 import { hybridSearch } from './retrieval.mjs';
+import { checkGrounding, groundingScore } from './grounding.mjs';
 import { makeVectorStore } from './vectorstore.mjs';
 import { handoffBrief as buildHandoffBrief } from './handoff.mjs';
 import { genId, sha12, nowISO } from './util.mjs';
@@ -42,9 +43,20 @@ export class Orchestrator {
       if (dup) { this.db.logOp('ingest-skip', { path, hash, sourceId: dup.id }); return { success: true, skipped: true, reason: 'unchanged', sourceId: dup.id }; }
 
       const ex = await this.extractor.extract(text, type);
+      // DELEGATE-52 safeguard: ground LLM-extracted concepts/claims against the source BEFORE they
+      // persist — quarantine (don't store) any whose content-words aren't actually in the document.
+      const gcfg = this.cfg.grounding || {};
+      const minOverlap = gcfg.enabled === false ? 0 : (gcfg.minOverlap ?? 0.5);
+      const gc = checkGrounding(text, ex.concepts, (c) => c.name, minOverlap);
+      const gcl = checkGrounding(text, ex.claims, (c) => c.content, minOverlap);
+      const grounding = {
+        summaryScore: Number(groundingScore(text, ex.summary).toFixed(3)), minOverlap,
+        conceptsKept: gc.grounded.length, conceptsQuarantined: gc.ungrounded.length,
+        claimsKept: gcl.grounded.length, claimsQuarantined: gcl.ungrounded.length,
+      };
       const { vector, model, mode } = await this.embedder.embed(ex.summary);
       const sourceId = genId('src', path);
-      const prov = { originalSource: path, extractedAt: nowISO(), chain: [{ step: 'ingest', source: path }] };
+      const prov = { originalSource: path, extractedAt: nowISO(), grounding, chain: [{ step: 'ingest', source: path }] };
       // Sources row (the dedup hash) commits WITH the entry: a failed ingest must not
       // leave the hash behind, or re-ingests would be skipped as 'unchanged' forever.
       // Supersede-on-reingest: a changed file replaces its earlier ingests — archive
@@ -60,18 +72,18 @@ export class Orchestrator {
         for (const id of superseded) sup.run(nowISO(), id);
         this.db.prepare('INSERT INTO sources(id,path,type,title,hash,ingested_at,metadata) VALUES(?,?,?,?,?,?,?)')
           .run(sourceId, path, type, title || null, hash, nowISO(), JSON.stringify(metadata));
-        return this.memory.store({ content: ex.summary, type: 'ingest', tier: 'memory', scope, sourceId, provenance: prov, concepts: ex.concepts });
+        return this.memory.store({ content: ex.summary, type: 'ingest', tier: 'memory', scope, sourceId, provenance: prov, concepts: gc.grounded });
       });
       await this.memory.upsertVector(stored.id, vector, model, mode);
 
-      const nodeIds = ex.concepts.map((c) => this.graph.upsertNode({ type: c.type || 'concept', label: c.name, source: path, properties: { confidence: c.confidence } }));
+      const nodeIds = gc.grounded.map((c) => this.graph.upsertNode({ type: c.type || 'concept', label: c.name, source: path, properties: { confidence: c.confidence, grounding: c.groundingScore } }));
       for (let i = 1; i < nodeIds.length; i++) this.graph.upsertEdge({ from: nodeIds[0], to: nodeIds[i], type: 'relates', source: path });
-      for (const cl of ex.claims) this.claims.add({ content: cl.content, type: 'fact', source: { path, type, title }, provenance: { extractor: ex.mode, confidence: cl.confidence } });
+      for (const cl of gcl.grounded) this.claims.add({ content: cl.content, type: 'fact', source: { path, type, title }, provenance: { extractor: ex.mode, confidence: cl.confidence, grounding: cl.groundingScore } });
 
-      const verification = this.verifier.verifyConcepts(ex.concepts);
-      this.db.logOp('ingest', { path, entry: stored.id, concepts: ex.concepts.length, claims: ex.claims.length, mode: ex.mode, conflicts: verification.conflicts.length, superseded: superseded.length });
+      const verification = this.verifier.verifyConcepts(gc.grounded);
+      this.db.logOp('ingest', { path, entry: stored.id, concepts: gc.grounded.length, claims: gcl.grounded.length, quarantined: gc.ungrounded.length + gcl.ungrounded.length, summaryScore: grounding.summaryScore, mode: ex.mode, conflicts: verification.conflicts.length, superseded: superseded.length });
       this.#markVaultDirty();
-      return { success: true, entry: stored, concepts: ex.concepts.length, claims: ex.claims.length, verification, mode: ex.mode, superseded };
+      return { success: true, entry: stored, concepts: gc.grounded.length, claims: gcl.grounded.length, grounding, verification, mode: ex.mode, superseded };
     });
     await this.#maybeMaintain();
     return r;
