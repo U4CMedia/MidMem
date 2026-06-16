@@ -19,13 +19,13 @@ kanban; the **QA gate is the `midmem-ingest-review` skill**.
 Multi-item knowledge-store work that's too much for one session: ingesting a batch of sources,
 re-grounding/auditing existing entries, deduping, reviewing tier promotions, or verifying the vault
 projection after a large change. Single recall/store/ingest = just use `midmem-ops` (OpenClaw) or the
-`ocmw` CLI directly; don't orchestrate.
+`midmem` CLI directly; don't orchestrate.
 
 ## The contract (what every curation card must respect)
 - **`state.db` is the source of truth; the vault is a deterministic, regenerable projection** — never
-  edit the vault; if it looks wrong, `ocmw project` rebuilds it. Curate the store, not the projection.
+  edit the vault; if it looks wrong, `midmem project` rebuilds it. Curate the store, not the projection.
 - **Grounding holds:** ingest deterministically quarantines extracted concepts/claims not present in
-  the source. A card must not bypass it (no `OCMW_GROUNDING=0` in curation).
+  the source. A card must not bypass it (no `MIDMEM_GROUNDING=0` in curation).
 - **Scope discipline:** writes default to the agent's scope; publish cross-agent facts as `shared`;
   never write another stack's private scope.
 - **Tiers are earned, not asserted:** promotion runs on usage/feedback (quantitative), never LLM
@@ -34,13 +34,13 @@ projection after a large change. Single recall/store/ingest = just use `midmem-o
   re-ingest over manual edits.
 
 ## Card patterns (decompose to these — small, verifiable)
-- **Ingest one source** → `ocmw ingest <path> --scope <s>`; acceptance: `success`, grounding report
+- **Ingest one source** → `midmem ingest <path> --scope <s>`; acceptance: `success`, grounding report
   shows acceptable `summaryScore` and no unexpected quarantine.
 - **Re-ground / audit a slice** → run `midmem-ingest-review` over a topic; acceptance: report has no
   unresolved contradictions/ungrounded entries (or they're flagged for forget/supersede).
 - **Dedup / cleanup** → identify duplicates via query; supersede by re-ingest or `forget` (soft);
   acceptance: `brief` counts reconcile.
-- **Vault verify** → `ocmw project` then confirm projection matches `state.db` counts.
+- **Vault verify** → `midmem project` then confirm projection matches `state.db` counts.
 
 ## Loop
 Plan the cards → `hermes kanban` dispatch (assignee `default`=qwen; escalate stuck/precision to

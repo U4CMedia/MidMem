@@ -1,4 +1,4 @@
-/** @openclaw-middleware/core — rebuilt foundation public API. */
+/** @midmem-kb-store/core — rebuilt foundation public API. */
 export { Orchestrator } from './orchestrator.mjs';
 export { loadConfig, DEFAULT_TIERS } from './config.mjs';
 export { StateDB } from './db.mjs';

@@ -29,9 +29,11 @@ export const DEFAULT_TIERS = [
 ];
 
 export function loadConfig(overrides = {}) {
+  // Env reads honor the new MIDMEM_ prefix, falling back to legacy OCMW_ (safe rename).
+  const env = (k) => process.env['MIDMEM_' + k] ?? process.env['OCMW_' + k];
   const cfg = {
     /** Single SQLite source-of-truth. */
-    dbPath: process.env.OCMW_DB_PATH || path.join(REPO, 'state.db'),
+    dbPath: env('DB_PATH') || path.join(REPO, 'state.db'),
     /** Obsidian vault root (LLM-owned wiki projected into the `wikiPath` subfolder). */
     vaultPath: VAULT,
     /** Wiki subdir inside the vault — the projected, LLM-owned knowledge base. */
@@ -43,7 +45,7 @@ export function loadConfig(overrides = {}) {
      *  Agents drop research into their vault folder; the router ingests it into the wiki.
      *  ~/changelog = frozen quarterly CHANGELOG archives (ingested once at archive time;
      *  the live root CHANGELOG.md stays QMD-only — too churny for one-summary-per-version). */
-    sourceRoots: (process.env.OCMW_SOURCE_ROOTS ||
+    sourceRoots: (env('SOURCE_ROOTS') ||
       [REPO, `${HOME}/.openclaw/workspace`, `${HOME}/.hermes/memories`, `${HOME}/changelog`, path.join(VAULT, 'OpenClaw'), path.join(VAULT, 'Hermes')].join(';')
     ).split(';').filter(Boolean),
     /** Native→middleware bridge: dirs scanned by `bridgeMemory`, each tagged with a scope.
@@ -55,13 +57,13 @@ export function loadConfig(overrides = {}) {
       { dir: path.join(VAULT, 'Hermes'), scope: 'hermes', type: 'note' },
     ],
     /** LM Studio OpenAI-compatible endpoint (embeddings + extraction). */
-    llmEndpoint: process.env.OCMW_LLM_ENDPOINT || 'http://192.168.50.210:1234/v1',
-    embedModel: process.env.OCMW_EMBED_MODEL || 'nomic-embed-text',
-    extractModel: process.env.OCMW_EXTRACT_MODEL || 'qwen/qwen3.6-35b-a3b',
+    llmEndpoint: env('LLM_ENDPOINT') || 'http://192.168.50.210:1234/v1',
+    embedModel: env('EMBED_MODEL') || 'nomic-embed-text',
+    extractModel: env('EXTRACT_MODEL') || 'qwen/qwen3.6-35b-a3b',
     /** Allow network LLM calls; when false, deterministic offline fallbacks are used. */
-    llmEnabled: process.env.OCMW_LLM_ENABLED !== '0',
+    llmEnabled: env('LLM_ENABLED') !== '0',
     /** Per-call timeout for LLM (ms) — the local model can saturate; keep tight. */
-    llmTimeoutMs: Number(process.env.OCMW_LLM_TIMEOUT_MS || 20000),
+    llmTimeoutMs: Number(env('LLM_TIMEOUT_MS') || 20000),
     /** Hybrid fusion: RRF constant + per-lane weights (fts token, trigram substring, vector). */
     rrfK: 60,
     fusionWeights: { fts: 1.0, trigram: 0.5, vector: 1.0 },
@@ -71,26 +73,26 @@ export function loadConfig(overrides = {}) {
     /** Fallback embedding dimension when offline. */
     fallbackDim: 256,
     /** Vector backend: 'sqlite' (in-DB JSON cosine, zero-dep, default) or 'qdrant' (external ANN). */
-    vectorBackend: process.env.OCMW_VECTOR_BACKEND || 'sqlite',
-    qdrantUrl: process.env.OCMW_QDRANT_URL || 'http://localhost:6333',
-    qdrantCollection: process.env.OCMW_QDRANT_COLLECTION || 'openduck_memory',
-    qdrantApiKey: process.env.OCMW_QDRANT_API_KEY || '',
+    vectorBackend: env('VECTOR_BACKEND') || 'sqlite',
+    qdrantUrl: env('QDRANT_URL') || 'http://localhost:6333',
+    qdrantCollection: env('QDRANT_COLLECTION') || 'openduck_memory',
+    qdrantApiKey: env('QDRANT_API_KEY') || '',
     tiers: DEFAULT_TIERS,
     /** DELEGATE-52 safeguard: deterministically verify LLM-extracted concepts/claims appear in the
      *  source before they enter state.db (quarantine confabulated/drifted extractions). minOverlap =
      *  fraction of an item's content-words that must occur in the source. enabled:false → no-op. */
     grounding: {
-      enabled: process.env.OCMW_GROUNDING !== '0',
-      minOverlap: Number(process.env.OCMW_GROUNDING_MIN_OVERLAP || 0.5),
+      enabled: env('GROUNDING') !== '0',
+      minOverlap: Number(env('GROUNDING_MIN_OVERLAP') || 0.5),
     },
     /** Phase 1 trigger-less recall: pre-turn hook calls `proactiveRecall(message)` which self-gates
      *  on `minScore` and caps injection at `maxTokens`. minScore is conservative by default (skip
      *  unless a real match); it's the seam for later feedback-driven self-tuning. */
     proactiveRecall: {
-      enabled: process.env.OCMW_PROACTIVE_RECALL !== '0',
-      minScore: Number(process.env.OCMW_RECALL_MIN_SCORE || 0.02),
-      maxTokens: Number(process.env.OCMW_RECALL_MAX_TOKENS || 600),
-      maxItems: Number(process.env.OCMW_RECALL_MAX_ITEMS || 4),
+      enabled: env('PROACTIVE_RECALL') !== '0',
+      minScore: Number(env('RECALL_MIN_SCORE') || 0.02),
+      maxTokens: Number(env('RECALL_MAX_TOKENS') || 600),
+      maxItems: Number(env('RECALL_MAX_ITEMS') || 4),
     },
     /** Self-driving lifecycle (decay + promotion) — runs opportunistically on normal use
      *  (query/ingest/remember), throttled by intervalMs, plus an external daily timer.
@@ -99,8 +101,8 @@ export function loadConfig(overrides = {}) {
      *  on usage alone; memory→wisdom only when EARNED via explicit helpful feedback (that
      *  feedback is the curation signal — the curated-only gate stays meaningful). */
     maintenance: {
-      enabled: process.env.OCMW_MAINTENANCE !== '0',
-      intervalMs: Number(process.env.OCMW_MAINT_INTERVAL_MS || 3600e3), // lazy sweep ≤ 1/hour
+      enabled: env('MAINTENANCE') !== '0',
+      intervalMs: Number(env('MAINT_INTERVAL_MS') || 3600e3), // lazy sweep ≤ 1/hour
       refreshOnAccess: true, // retrieval extends expires_at by the tier's TTL
       distrustBelow: 0.2, // archive non-permanent entries the feedback loop has buried
       factPromote: { minRetrievals: 3, minTrust: 0.6 }, // fact→memory: proven useful by use
@@ -109,7 +111,7 @@ export function loadConfig(overrides = {}) {
     /** Default memory scope for this process: `openclaw` | `hermes` | `shared`.
      *  Set per MCP registration (OCMW_AGENT_SCOPE). Writes default here; reads = this + shared.
      *  `shared` = admin/bridge context (may write any scope). */
-    agentScope: process.env.OCMW_AGENT_SCOPE || 'shared',
+    agentScope: env('AGENT_SCOPE') || 'shared',
     /** Governance: deny on policy-eval error (fail-closed). */
     failClosed: true,
   };

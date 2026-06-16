@@ -1,7 +1,7 @@
 # MidMem Skills Library (Claude Code)
 
 Claude Code CLI skills that ship **with** the MidMem middleware, so they travel with the repo and
-work wherever it's deployed. They drive MidMem through the same `ocmw` CLI / MCP tools the middleware
+work wherever it's deployed. They drive MidMem through the same `midmem` CLI / MCP tools the middleware
 exposes — no extra dependencies.
 
 | Skill | Purpose |
@@ -27,3 +27,5 @@ On the OpenDuck machine this is already done. Re-run after a fresh checkout of t
 - `midmem-ops` — an **OpenClaw** skill (lives in `~/.openclaw/workspace/skills/`) for OpenClaw to
   operate the store directly. See the repo README's *Skills — which one to use per integration*.
 - `hermes-build-orchestrator` — the general Claude Code build-orchestration skill these repurpose.
+
+← Back to the [main README](../README.md) · [core engine](../packages/core/README.md) · [RESEARCH](../RESEARCH.md)

@@ -16,24 +16,24 @@ confidently assert faithfulness — so judge quality by **deterministic signals 
 agreement**, never by asking a model "is this right?"
 
 ## Ingest (with verification, not blind)
-- `ocmw ingest <path> --scope <openclaw|hermes|shared> [--type ...]`. Grounding runs automatically.
+- `midmem ingest <path> --scope <openclaw|hermes|shared> [--type ...]`. Grounding runs automatically.
 - **Read the grounding report** in the result (`summaryScore`, `conceptsKept/Quarantined`,
   `claimsKept/Quarantined`). Flags: low `summaryScore` (≲0.4) → the summary drifted from the source;
   heavy quarantine → the extractor confabulated. Investigate the source/extraction before trusting it.
 - Finish editing a source BEFORE ingesting (mid-edit saves mint duplicates). Re-ingest supersedes.
 
 ## Review / audit the store
-- **`ocmw brief`** — tier distribution, vector health (dim, fallback count), recent ops.
-- **`ocmw audit`** — contradictions + orphan concepts (deterministic verifier). Triage each.
-- **Per-entry quality:** `ocmw recall <id>` → check `provenance.grounding`, `trust_score`,
+- **`midmem brief`** — tier distribution, vector health (dim, fallback count), recent ops.
+- **`midmem audit`** — contradictions + orphan concepts (deterministic verifier). Triage each.
+- **Per-entry quality:** `midmem recall <id>` → check `provenance.grounding`, `trust_score`,
   `retrieval_count`, tier. Low grounding or low trust + low usage = decay/forget candidate.
 
 ## Cross-stack check-and-balance (the core differentiator)
 The store is shared but each stack reads **its own scope + `shared`**. To compare what each
 *understands* about a topic, run the same query under each lens and diff:
 ```
-ocmw query "<topic>" --scopes openclaw,shared   # what OpenClaw can surface
-ocmw query "<topic>" --scopes hermes,shared     # what Hermes can surface
+midmem query "<topic>" --scopes openclaw,shared   # what OpenClaw can surface
+midmem query "<topic>" --scopes hermes,shared     # what Hermes can surface
 ```
 Then assess:
 - **Divergence** — entries one stack has and the other doesn't (private-scope knowledge that should
@@ -51,7 +51,7 @@ topics; ungrounded/low-trust entries; and recommended actions. Distinguish **qua
 shared knowledge).
 
 ## Apply (safe vs flag)
-- **Safe, do with a note:** `ocmw feedback <id> --helpful=false` to down-weight a bad entry;
+- **Safe, do with a note:** `midmem feedback <id> --helpful=false` to down-weight a bad entry;
   re-ingest a corrected source (supersede); `forget` (soft) a clearly-confabulated entry.
 - **Flag for the human:** contradictions needing a judgment call, scope re-classification of
   sensitive content, anything that changes canonical facts (MEMORY.md).
