@@ -11,7 +11,9 @@ dual-stack, but usable by **either system alone or both together** (see [Integra
 
 > **Status:** foundation + cross-agent scope + native→middleware bridge + retrieval upgrades
 > (trust, trigram, token-budget, graph-boost, dim-guard) + selectable Qdrant vector backend +
-> hand-off memory gate. Tested (smoke **27/27**). Runnable Node ESM, **zero external dependencies**
+> hand-off memory gate, a self-driving lifecycle (decay / usage-earned promotion / auto-projection),
+> trigger-less `proactiveRecall`, and a DELEGATE-52 extraction-grounding check. Tested (smoke
+> **57/57**). Runnable Node ESM, **zero external dependencies**
 > (Node ≥ 22.5 built-ins only: `node:sqlite`, `crypto`, `fetch`).
 > `packages/core/` is the active foundation; the other `packages/*` are the superseded interim
 > scaffold, kept for reference only.
@@ -141,6 +143,28 @@ other's private scope. Concurrency across the two server processes is handled by
 | Private + shared memory | — | — | ✅ |
 | Shared `state.db` | n/a | n/a | ✅ (same path) |
 
+### Skills — which one to use per integration
+Two skills front the store; pick by how you're driving the stack:
+
+| Skill | Lives in | Drives | Use it for |
+|---|---|---|---|
+| **`midmem-ops`** | OpenClaw (`workspace/skills/`) | the OpenClaw agent | recall / store / ingest / proactive-recall / feedback directly via the MCP tools |
+| **`hermes-build-orchestrator`** | Claude Code (`.claude/skills/`) | a frontier model (plan + QA); Hermes/qwen + gpt-5.5 build via kanban | multi-card builds with a QA gate per card |
+
+- **OpenClaw only (Option A):** use **`midmem-ops`** — the OpenClaw agent operates memory itself
+  (recall/store/ingest); no Hermes needed.
+- **Hermes only / a build (Option B):** use **`hermes-build-orchestrator`** — it plans, dispatches
+  kanban cards to Hermes, and QAs each; Hermes reads/writes the store through the same MCP tools.
+- **OpenClaw + Hermes (Option C):** OpenClaw uses **`midmem-ops`** for its own recall and
+  **`hermes-router`** to route research/builds to Hermes; at the ACP boundary prepend a
+  **`handoff_brief`** so durable memory rides along (local models won't pull it on their own).
+  Builds run through **`hermes-build-orchestrator`**. Both stacks share one `state.db`.
+
+> Long-horizon integrity: `hermes-build-orchestrator` caps interactions/card, restrains tools, and
+> QAs after every write (DELEGATE-52 mitigations); ingest applies a deterministic **grounding check**
+> so confabulated extractions never persist. Supporting Claude Code ops skills: `openduck-doctor`
+> (diagnostics/RCA), `openduck-record` (changelog+midmem+commit), `openduck-config`, `openduck-security-audit`.
+
 ---
 
 ## Quick start
@@ -148,7 +172,7 @@ other's private scope. Concurrency across the two server processes is handled by
 ```bash
 # No install needed (Node ≥ 22.5 built-ins only).
 cd packages/core
-node test/smoke.mjs                         # end-to-end self-test (offline) → 27/27
+node test/smoke.mjs                         # end-to-end self-test (offline) → 57/57
 
 node bin/cli.mjs init                        # show resolved config
 node bin/cli.mjs ingest <file> --type note   # compile a source into the store
