@@ -70,6 +70,16 @@ export function loadConfig(overrides = {}) {
     /** Additive ranking boosts, kept small vs a single RRF rank (≈ 1/60 ≈ 0.0167). */
     trustWeight: 0.01, // × (trust_score − 0.5) → ±0.005
     graphBoost: 0.004, // × shared-concept count (capped at 3)
+    /** P4 temporal/workflow boosts — fused after RRF like trust/graph. Recency + proven usefulness
+     *  lift entries; corrections/decisions (work-memory) are boosted because they reshape behavior;
+     *  dead-ends are DEMOTED and flagged (rank.deadEndWarning) so they surface as warnings, not
+     *  primary evidence. All deterministic from the entry's own fields. enabled:false → no-op. */
+    workflowBoost: {
+      enabled: env('WORKFLOW_BOOST') !== '0',
+      recency: 0.004, recencyHalfLifeDays: 30,
+      usefulness: 0.002, // × min(retrieval_count, 5)
+      correction: 0.01, decision: 0.006, deadEndPenalty: 0.008,
+    },
     /** Fallback embedding dimension when offline. */
     fallbackDim: 256,
     /** Vector backend: 'sqlite' (in-DB JSON cosine, zero-dep, default) or 'qdrant' (external ANN). */
@@ -77,6 +87,13 @@ export function loadConfig(overrides = {}) {
     qdrantUrl: env('QDRANT_URL') || 'http://localhost:6333',
     qdrantCollection: env('QDRANT_COLLECTION') || 'openduck_memory',
     qdrantApiKey: env('QDRANT_API_KEY') || '',
+    /** P5 concept routing: embed concept nodes + deterministic communities (built in forced/daily
+     *  maintain), then the query vector seeds entries linked to its nearest concept communities into
+     *  retrieval (+ a small boost). Fail-soft → flat hybrid when nothing is embedded. No per-query LLM. */
+    conceptRouting: {
+      enabled: env('CONCEPT_ROUTING') !== '0',
+      topConcepts: 5, minSim: 0.1, boost: 0.005, maxEmbedPerPass: 60,
+    },
     tiers: DEFAULT_TIERS,
     /** DELEGATE-52 safeguard: deterministically verify LLM-extracted concepts/claims appear in the
      *  source before they enter state.db (quarantine confabulated/drifted extractions). minOverlap =

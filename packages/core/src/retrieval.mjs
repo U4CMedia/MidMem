@@ -9,6 +9,7 @@
  * (Ideas adapted from memory-os: trust scoring, two-pass ref-chain boost, token budget.)
  */
 import { ftsMatchExpr } from './util.mjs';
+import { conceptSeedsFromVector } from './concepts.mjs';
 
 /** One FTS lane (token or trigram), scope/tier filtered. Returns ranked entry ids.
  *  Expired leases are filtered here too — decay holds even between maintenance sweeps. */
@@ -68,6 +69,15 @@ export async function hybridSearch(db, memory, embedder, query, opts = {}) {
   };
   for (const lane of ['fts', 'trigram', 'vector']) lanes[lane].forEach((id, i) => bump(id, i, lane));
 
+  // --- P5 concept routing (fail-soft): seed entries linked to the query's nearest concept
+  //     communities into the candidate pool, so global/relational hits surface even without a direct
+  //     lexical/vector match. Reuses the query vector qv (no extra embed, no per-query LLM). ---
+  let conceptSeeds = new Set();
+  if (cfg.conceptRouting?.enabled !== false) {
+    try { conceptSeeds = conceptSeedsFromVector(db, qv, cfg); } catch { conceptSeeds = new Set(); }
+    for (const id of conceptSeeds) if (!fused.has(id)) fused.set(id, { score: 0, ranks: { concept: true } });
+  }
+
   // Hydrate candidates once.
   const cand = [...fused.entries()].map(([id, m]) => ({ id, score: m.score, ranks: m.ranks, entry: memory.get(id) })).filter((c) => c.entry);
 
@@ -84,6 +94,31 @@ export async function hybridSearch(db, memory, embedder, query, opts = {}) {
       const shared = (c.entry.concepts || []).filter((k2) => topConcepts.has(String(k2.name || '').toLowerCase())).length;
       if (shared) { c.score += cfg.graphBoost * Math.min(shared, 3); c.ranks.graph = shared; }
     }
+  }
+
+  // --- P4 temporal/workflow boosts: recency + proven usefulness + work-event semantics.
+  //     Small additive nudges (same magnitude as trust/graph). Dead-ends are demoted + flagged so
+  //     they surface as warnings, not primary evidence. Deterministic from each entry's own fields. ---
+  const wf = cfg.workflowBoost || {};
+  if (wf.enabled !== false) {
+    const now = Date.now();
+    const halfLifeMs = (wf.recencyHalfLifeDays ?? 30) * 864e5;
+    for (const c of cand) {
+      const e = c.entry;
+      const ts = Date.parse(e.last_accessed_at || e.updated_at || e.created_at || '') || 0;
+      if (ts) { const rec = Math.max(0, 1 - (now - ts) / halfLifeMs); if (rec > 0) { c.score += (wf.recency ?? 0.004) * rec; c.ranks.recency = Number(rec.toFixed(2)); } }
+      const rc = Math.min(e.retrieval_count ?? 0, 5);
+      if (rc) c.score += (wf.usefulness ?? 0.002) * rc;
+      if (e.type === 'correction') c.score += (wf.correction ?? 0.01);
+      else if (e.type === 'decision') c.score += (wf.decision ?? 0.006);
+      else if (e.type === 'dead_end') { c.score -= (wf.deadEndPenalty ?? 0.008); c.ranks.deadEndWarning = true; }
+    }
+  }
+
+  // --- P5 concept boost: lift entries surfaced by concept routing (small, like graph boost). ---
+  if (conceptSeeds.size) {
+    const cb = cfg.conceptRouting?.boost ?? 0.005;
+    for (const c of cand) if (conceptSeeds.has(c.id)) { c.score += cb; c.ranks.concept = true; }
   }
 
   cand.sort((a, b) => b.score - a.score);

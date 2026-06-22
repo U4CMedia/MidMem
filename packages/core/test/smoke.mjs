@@ -274,6 +274,29 @@ try {
   const prNoise = await o.proactiveRecall('zzqx unrelated gibberish term', { minScore: 0.99 });
   ok(prNoise.inject === null, 'proactiveRecall stays silent (inject:null) below threshold');
 
+  // 14. P4 temporal/workflow boosts: dead-ends are demoted + flagged; corrections retrievable.
+  await o.recordWork({ kind: 'dead_end', task: 'parser approach', content: 'tried regex spelunking the minified bundle dead end avoid', outcome: 'too brittle' });
+  const deq = await o.query('regex spelunking minified bundle dead end avoid', { limit: 5 });
+  const deHit = deq.results.find((r) => /dead end avoid|regex spelunking/i.test(r.content));
+  ok(deHit && deHit.rank?.deadEndWarning === true, 'P4: dead-end surfaces flagged as a warning (rank.deadEndWarning)');
+
+  // 15. P6 atomic claims: supersede + freshness "current" + deterministic contradiction
+  const c1 = o.claims.add({ content: 'The OpenClaw gateway webhook route is registered and healthy' });
+  const sup = o.supersedeClaim(c1.id, { content: 'The OpenClaw gateway webhook route was de-registered after the matrix reload' });
+  ok(sup.success && o.claims.get(c1.id).status === 'superseded', 'P6: supersede marks the old claim superseded + cross-links');
+  const cur = o.currentClaims('OpenClaw gateway webhook route', { limit: 5 });
+  ok(cur.length && cur[0].id === sup.current && cur.every((c) => c.status !== 'superseded'), 'P6: current() returns the freshest non-superseded claim');
+  o.claims.add({ content: 'the matrix plugin is enabled and configured' });
+  o.claims.add({ content: 'the matrix plugin is not enabled, it was disabled' });
+  const contra = o.claimContradictions({ minShared: 2 });
+  ok(contra.some((p) => /matrix plugin/i.test(p.contentA) && /matrix plugin/i.test(p.contentB)), 'P6: deterministic contradiction finder flags the negated pair');
+
+  // 16. P5 concept routing: build the graph (embed nodes + communities), retrieval stays fail-soft.
+  const cg = await o.refreshConcepts();
+  ok(cg.embedded > 0 && cg.communities >= 1, `P5: concept graph built (embedded ${cg.embedded} nodes, ${cg.communities} communities)`);
+  const crq = await o.query('hybrid retrieval vector fusion', { limit: 5 });
+  ok(crq.results.length > 0, 'P5: retrieval still returns results with concept routing enabled (fail-soft)');
+
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
 } catch (e) {
   console.error('\nFATAL:', e.stack); fail++;

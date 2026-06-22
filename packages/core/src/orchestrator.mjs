@@ -18,6 +18,7 @@ import { checkGrounding, groundingScore } from './grounding.mjs';
 import { makeVectorStore } from './vectorstore.mjs';
 import { handoffBrief as buildHandoffBrief } from './handoff.mjs';
 import { recordWorkEvent, listOpenTasks, consolidateWork, categorizeIngest } from './workmemory.mjs';
+import { refreshConceptGraph } from './concepts.mjs';
 import { genId, sha12, nowISO } from './util.mjs';
 
 export class Orchestrator {
@@ -187,12 +188,19 @@ export class Orchestrator {
       }
       if (swept.expired.length || swept.distrusted.length) this.#markVaultDirty();
 
+      // P5: (re)build the concept graph (embed nodes + communities) only on a forced/daily pass —
+      // it can embed many nodes, so it must NOT run on the opportunistic hot-path maintain.
+      let concepts = null;
+      if (force && this.cfg.conceptRouting?.enabled) {
+        try { concepts = await refreshConceptGraph(this); } catch (e) { concepts = { error: e.message }; }
+      }
+
       let projected = null;
       if (this.#vaultDirty()) {
         // Vault is a projection on possibly-remote storage — its failure must not fail maintenance.
         try { projected = this.project(); } catch (e) { projected = { error: e.message }; }
       }
-      const summary = { swept, promoted, projected, autoIngested, forced: force };
+      const summary = { swept, promoted, projected, autoIngested, concepts, forced: force };
       this.db.logOp('maintain', summary);
       return summary;
     } finally { this._maintaining = false; }
@@ -210,6 +218,9 @@ export class Orchestrator {
 
   /** Ongoing requests: task nodes not yet marked done. */
   openTasks() { return listOpenTasks(this); }
+
+  /** P5: (re)build the concept graph (embed nodes + communities) on demand. */
+  async refreshConcepts(opts) { return refreshConceptGraph(this, opts); }
 
   /** Lazy maintenance hook — cheap when not due; never breaks the primary op. */
   async #maybeMaintain() {
@@ -269,6 +280,12 @@ export class Orchestrator {
 
   getGraph() { return this.graph.getGraph(); }
   searchClaims(q, opts) { return this.claims.search(q, opts); }
+  /** P6: the current (freshest, non-superseded/contradicted) claim(s) for a query. */
+  currentClaims(q, opts) { return this.claims.current(q, opts); }
+  /** P6: supersede a claim with an updated one (knowledge-point update). */
+  supersedeClaim(oldId, next) { const r = this.claims.supersede(oldId, next); this.db.logOp('claim-supersede', { oldId, current: r.current }); if (r.success) this.#markVaultDirty(); return r; }
+  /** P6: deterministic contradiction candidates among live claims. */
+  claimContradictions(opts) { return this.claims.findContradictions(opts); }
 
   #graphContext(q) {
     const nodes = this.graph.findByText(q);

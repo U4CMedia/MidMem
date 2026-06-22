@@ -52,6 +52,44 @@ export class ClaimStore {
     return { total: all.length, byType, byStatus };
   }
 
+  /** P6: supersede an old claim with a new one (knowledge-point update). The old claim is marked
+   *  `superseded` and cross-linked; the new claim records what it `supersedes`. Atomic. */
+  supersede(oldId, next = {}) {
+    const old = this.get(oldId);
+    if (!old) return { success: false, message: `not found: ${oldId}` };
+    return this.db.tx(() => {
+      const created = this.add({ content: next.content, type: next.type || old.type, source: next.source || old.source, provenance: next.provenance || {}, metadata: { ...(next.metadata || {}), supersedes: oldId } });
+      this.db.prepare('UPDATE claims SET status=?, metadata=?, updated_at=? WHERE id=?')
+        .run('superseded', JSON.stringify({ ...old.metadata, superseded_by: created.id }), nowISO(), oldId);
+      return { success: true, superseded: oldId, current: created.id };
+    });
+  }
+
+  /** P6: deterministic contradiction finder (no LLM). Two live claims contradict when they share
+   *  ≥ minShared significant tokens but exactly ONE carries a negation marker. Heuristic but stable —
+   *  flags candidates for review; does not auto-mutate status. */
+  findContradictions({ minShared = 3 } = {}) {
+    const NEG = new Set(['not', 'no', 'never', 'none', 'cannot', 'cant', 'isnt', 'arent', 'wont', 'dont', 'false', 'incorrect', 'deprecated', 'removed', 'without', 'disabled', 'fails', 'failed']);
+    const live = this.getAll().filter((c) => c.status === 'active' || c.status === 'verified')
+      .map((c) => ({ c, set: new Set(tokenize(c.content)) }));
+    const pairs = [];
+    for (let i = 0; i < live.length; i++) for (let j = i + 1; j < live.length; j++) {
+      const a = live[i], b = live[j];
+      if ([...a.set].some((t) => NEG.has(t)) === [...b.set].some((t) => NEG.has(t))) continue; // need exactly one negated
+      let shared = 0; for (const t of a.set) if (!NEG.has(t) && b.set.has(t)) shared++;
+      if (shared >= minShared) pairs.push({ a: a.c.id, b: b.c.id, shared, contentA: a.c.content, contentB: b.c.content });
+    }
+    return pairs;
+  }
+
+  /** P6: the current (freshest, non-superseded/contradicted/archived) claim(s) matching a query —
+   *  "retrieve the right current claim after updates". */
+  current(query, opts = {}) {
+    return this.search(query, { ...opts, statuses: [] })
+      .filter((c) => c.status === 'active' || c.status === 'verified')
+      .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+  }
+
   #score(c, qt) {
     const hay = (c.content + ' ' + (c.source?.path || '')).toLowerCase();
     let s = 0;
