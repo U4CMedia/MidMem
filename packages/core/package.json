@@ -13,6 +13,8 @@
   },
   "scripts": {
     "test": "node test/smoke.mjs",
+    "bench": "node test/bench.mjs",
+    "verify": "node test/smoke.mjs && node test/bench.mjs",
     "mcp": "node bin/mcp-server.mjs",
     "cli": "node bin/cli.mjs"
   },
