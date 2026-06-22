@@ -5,7 +5,11 @@
  */
 import { genId, nowISO, sha12, json } from './util.mjs';
 
-const EDGE_TYPES = new Set(['references', 'contradicts', 'supports', 'relates']);
+const EDGE_TYPES = new Set([
+  'references', 'contradicts', 'supports', 'relates',
+  // work-memory relations (task → source/artifact/concept/correction)
+  'attempted', 'used_source', 'avoided', 'corrected_by', 'produced', 'decided', 'about',
+]);
 
 export class GraphStore {
   constructor(db) { this.db = db; }

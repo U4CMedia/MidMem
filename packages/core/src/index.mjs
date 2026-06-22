@@ -15,3 +15,4 @@ export { projectVault } from './project.mjs';
 export { bridgeMemory } from './bridge.mjs';
 export { makeVectorStore, SqliteVectorStore, QdrantVectorStore } from './vectorstore.mjs';
 export { handoffBrief, HANDOFF_PROFILES } from './handoff.mjs';
+export { recordWorkEvent, listOpenTasks, consolidateWork, categorizeIngest, WORK_EVENT_TYPES, WORK_EVENT_NAMES } from './workmemory.mjs';

@@ -17,6 +17,7 @@ import { hybridSearch } from './retrieval.mjs';
 import { checkGrounding, groundingScore } from './grounding.mjs';
 import { makeVectorStore } from './vectorstore.mjs';
 import { handoffBrief as buildHandoffBrief } from './handoff.mjs';
+import { recordWorkEvent, listOpenTasks, consolidateWork, categorizeIngest } from './workmemory.mjs';
 import { genId, sha12, nowISO } from './util.mjs';
 
 export class Orchestrator {
@@ -56,7 +57,9 @@ export class Orchestrator {
       };
       const { vector, model, mode } = await this.embedder.embed(ex.summary);
       const sourceId = genId('src', path);
-      const prov = { originalSource: path, extractedAt: nowISO(), grounding, chain: [{ step: 'ingest', source: path }] };
+      // Deterministic category tag so the store tracks ongoing requests by kind (research/build/...).
+      const category = categorizeIngest({ type, content: ex.summary, title });
+      const prov = { originalSource: path, extractedAt: nowISO(), category, grounding, chain: [{ step: 'ingest', source: path }] };
       // Sources row (the dedup hash) commits WITH the entry: a failed ingest must not
       // leave the hash behind, or re-ingests would be skipped as 'unchanged' forever.
       // Supersede-on-reingest: a changed file replaces its earlier ingests — archive
@@ -156,28 +159,57 @@ export class Orchestrator {
   async maintain({ force = false } = {}) {
     const m = this.cfg.maintenance || {};
     if (!m.enabled && !force) return { skipped: true, reason: 'disabled' };
+    // Re-entrancy guard: auto-ingest bridges files via ingest(), which calls #maybeMaintain() →
+    // maintain(). Without this, a low intervalMs would recurse infinitely (the throttle alone is
+    // not a safe guard). One maintenance pass at a time, period.
+    if (this._maintaining) return { skipped: true, reason: 're-entrant' };
     const now = Date.now();
     const last = Number(this.db.prepare("SELECT value FROM meta WHERE key='last_maintenance_at'").get()?.value || 0);
     if (!force && now - last < m.intervalMs) return { skipped: true, reason: 'not_due', nextDueMs: m.intervalMs - (now - last) };
     this.db.prepare("INSERT INTO meta(key,value) VALUES('last_maintenance_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(now));
 
-    const swept = this.memory.sweepLifecycle({ distrustBelow: m.distrustBelow ?? 0 });
-    const promoted = [];
-    for (const c of this.memory.autoPromoteCandidates(m)) {
-      // Governance still gates each promotion — a veto stands, the rest proceed.
-      try { await this.promote(c.id, c.to, { curated: c.curated }); promoted.push(c); } catch { /* vetoed */ }
-    }
-    if (swept.expired.length || swept.distrusted.length) this.#markVaultDirty();
+    this._maintaining = true;
+    try {
+      // Auto-ingest agent work first (deterministic bridge of session/memory dirs) so this pass's
+      // projection + promotion sees the freshly-captured entries. Best-effort; never fails maintenance.
+      // The re-entrancy guard (above) stops the bridge's own ingests from recursing back into maintain.
+      let autoIngested = null;
+      if (this.cfg.autoIngest?.enabled && this.cfg.autoIngest?.onMaintain) {
+        autoIngested = await consolidateWork(this);
+        if (autoIngested?.bridged) this.#markVaultDirty();
+      }
 
-    let projected = null;
-    if (this.#vaultDirty()) {
-      // Vault is a projection on possibly-remote storage — its failure must not fail maintenance.
-      try { projected = this.project(); } catch (e) { projected = { error: e.message }; }
-    }
-    const summary = { swept, promoted, projected, forced: force };
-    this.db.logOp('maintain', summary);
-    return summary;
+      const swept = this.memory.sweepLifecycle({ distrustBelow: m.distrustBelow ?? 0 });
+      const promoted = [];
+      for (const c of this.memory.autoPromoteCandidates(m)) {
+        // Governance still gates each promotion — a veto stands, the rest proceed.
+        try { await this.promote(c.id, c.to, { curated: c.curated }); promoted.push(c); } catch { /* vetoed */ }
+      }
+      if (swept.expired.length || swept.distrusted.length) this.#markVaultDirty();
+
+      let projected = null;
+      if (this.#vaultDirty()) {
+        // Vault is a projection on possibly-remote storage — its failure must not fail maintenance.
+        try { projected = this.project(); } catch (e) { projected = { error: e.message }; }
+      }
+      const summary = { swept, promoted, projected, autoIngested, forced: force };
+      this.db.logOp('maintain', summary);
+      return summary;
+    } finally { this._maintaining = false; }
   }
+
+  /** Record a work-memory event (task_attempt|source_used|dead_end|correction|artifact|decision).
+   *  Stored as a provenance-linked, categorized entry + typed graph edges — the Brain-style
+   *  "memory about work". storeMemory inside handles governance/embedding. */
+  async recordWork(ev = {}) {
+    if (this.cfg.workMemory?.enabled === false) return { success: false, reason: 'work-memory disabled' };
+    const r = await recordWorkEvent(this, ev);
+    this.#markVaultDirty();
+    return r;
+  }
+
+  /** Ongoing requests: task nodes not yet marked done. */
+  openTasks() { return listOpenTasks(this); }
 
   /** Lazy maintenance hook — cheap when not due; never breaks the primary op. */
   async #maybeMaintain() {

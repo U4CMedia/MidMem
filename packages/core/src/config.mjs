@@ -108,6 +108,17 @@ export function loadConfig(overrides = {}) {
       factPromote: { minRetrievals: 3, minTrust: 0.6 }, // fact→memory: proven useful by use
       wisdomPromote: { minRetrievals: 5, minTrust: 0.7, minHelpful: 2 }, // memory→wisdom: earned curation
     },
+    /** Work-memory (Perplexity-Brain-style "memory about work"): record agent task attempts,
+     *  sources used, dead ends, corrections, artifacts, decisions as first-class entries + graph
+     *  edges, and deterministically categorize every ingest. Pure-core; works in all 4 modes. */
+    workMemory: { enabled: env('WORK_MEMORY') !== '0' },
+    /** Automatic ingest of agent work + knowledge. When `onMaintain`, the maintenance pass also
+     *  runs the (idempotent, hash-deduped) bridge — pulling each stack's session/memory dirs into
+     *  the store so ongoing requests are tracked without anyone remembering to ingest. Deterministic. */
+    autoIngest: {
+      enabled: env('AUTO_INGEST') !== '0',
+      onMaintain: env('AUTO_INGEST_ON_MAINTAIN') !== '0',
+    },
     /** Default memory scope for this process: `openclaw` | `hermes` | `shared`.
      *  Set per MCP registration (OCMW_AGENT_SCOPE). Writes default here; reads = this + shared.
      *  `shared` = admin/bridge context (may write any scope). */

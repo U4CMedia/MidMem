@@ -5,7 +5,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { Orchestrator, GovernanceError, checkGrounding, groundingScore } from '../src/index.mjs';
+import { Orchestrator, GovernanceError, checkGrounding, groundingScore, categorizeIngest, WORK_EVENT_NAMES } from '../src/index.mjs';
 
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; console.log(`  ✓ ${msg}`); } else { fail++; console.log(`  ✗ ${msg}`); } };
@@ -17,6 +17,8 @@ const o = new Orchestrator({
   vaultPath: path.join(tmp, 'vault'),
   llmEnabled: false,
   sourceRoots: [tmp],
+  // Hermetic: don't let maintenance auto-bridge the real ~/.openclaw / ~/.hermes dirs into the test db.
+  autoIngest: { enabled: false, onMaintain: false },
 });
 
 try {
@@ -165,6 +167,7 @@ try {
   // 26. Self-driving lifecycle: decay (lease expiry, lease renewal, distrust) + usage-earned promotion.
   const lo = new Orchestrator({
     dbPath: path.join(tmp, 'lifecycle.db'), vaultPath: path.join(tmp, 'vault2'), llmEnabled: false, sourceRoots: [tmp],
+    autoIngest: { enabled: false, onMaintain: false }, // hermetic: no real-dir bridging during maintain()
     tiers: [
       { name: 'fact', ttl: 100, autoPromote: true, curatedOnly: false }, // 100ms lease for the test
       { name: 'memory', ttl: 60_000, autoPromote: true, curatedOnly: false },
@@ -243,6 +246,33 @@ try {
   const ging = await o.ingest({ path: gfile, type: 'note' });
   ok(ging.grounding && typeof ging.grounding.summaryScore === 'number', `ingest returns a grounding report (summaryScore=${ging.grounding?.summaryScore})`);
   ok(ging.grounding.claimsQuarantined === 0, 'a faithful doc quarantines no claims');
+
+  // 11. Work-memory: deterministic ingest categorization (no LLM)
+  ok(categorizeIngest({ type: 'note', content: 'We need to research and compare these arxiv papers' }) === 'research', 'categorizer tags research');
+  ok(categorizeIngest({ type: 'note', content: 'Implement the build and add a PR' }) === 'build', 'categorizer tags build');
+  ok(categorizeIngest({ type: 'note', content: 'the gateway was unresponsive, a 404 outage' }) === 'incident', 'categorizer tags incident');
+  ok(categorizeIngest({ type: 'correction', content: 'x' }) === 'correction', 'a work-event type is its own category');
+  ok(categorizeIngest({ type: 'note', content: 'plain neutral statement about flour' }) === 'knowledge', 'uncategorized falls back to knowledge');
+
+  // 12. Work-memory events: record → entry + graph edges + open-task tracking
+  ok(WORK_EVENT_NAMES.includes('task_attempt') && WORK_EVENT_NAMES.includes('correction'), 'work-event kinds registered');
+  const wt = await o.recordWork({ kind: 'task_attempt', task: 'Wire proactive recall', content: 'starting the build', source: 'brain-memo.md' });
+  ok(wt.success && wt.kind === 'task_attempt' && wt.status === 'open', 'task_attempt recorded as open');
+  const wc = await o.recordWork({ kind: 'correction', task: 'Wire proactive recall', content: 'use a pre-turn hook, not a tool the model must choose', outcome: 'hook approach adopted' });
+  ok(wc.success && wc.tier === 'memory', 'correction lands in durable memory tier');
+  const openA = o.openTasks();
+  ok(openA.some((t) => t.task === 'Wire proactive recall' && t.status === 'open'), 'open task is tracked as an ongoing request');
+  await o.recordWork({ kind: 'task_attempt', task: 'Wire proactive recall', status: 'done', outcome: 'shipped' });
+  ok(!o.openTasks().some((t) => t.task === 'Wire proactive recall'), 'marking status done removes it from ongoing requests');
+  // work events are first-class entries → retrievable by hybrid search
+  const wq = await o.query('proactive recall pre-turn hook', { limit: 5 });
+  ok(wq.results.some((r) => /proactive recall/i.test(r.content)), 'recorded work event is retrievable via query');
+
+  // 13. proactiveRecall self-gates: surfaces a relevant hit, stays silent on noise
+  const prHit = await o.proactiveRecall('how do we wire proactive recall', { minScore: 0, force: true });
+  ok(prHit.inject && prHit.used.length > 0, 'proactiveRecall surfaces an inject block for a relevant message');
+  const prNoise = await o.proactiveRecall('zzqx unrelated gibberish term', { minScore: 0.99 });
+  ok(prNoise.inject === null, 'proactiveRecall stays silent (inject:null) below threshold');
 
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
 } catch (e) {
