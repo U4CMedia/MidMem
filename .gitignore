@@ -57,3 +57,7 @@ packages/core/state.db*
 
 # MCP / bridge output dirs
 playwright-output/
+
+# db backups (any suffix) — memory content must never reach a remote
+state.db.bak*
+state.db-*

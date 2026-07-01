@@ -18,7 +18,7 @@ import { checkGrounding, groundingScore } from './grounding.mjs';
 import { makeVectorStore } from './vectorstore.mjs';
 import { handoffBrief as buildHandoffBrief } from './handoff.mjs';
 import { recordWorkEvent, listOpenTasks, consolidateWork, categorizeIngest } from './workmemory.mjs';
-import { refreshConceptGraph } from './concepts.mjs';
+import { refreshConceptGraph, mergeConceptNodes, conceptDupeCandidates } from './concepts.mjs';
 import { genId, sha12, nowISO } from './util.mjs';
 
 export class Orchestrator {
@@ -188,11 +188,27 @@ export class Orchestrator {
       }
       if (swept.expired.length || swept.distrusted.length) this.#markVaultDirty();
 
-      // P5: (re)build the concept graph (embed nodes + communities) only on a forced/daily pass —
-      // it can embed many nodes, so it must NOT run on the opportunistic hot-path maintain.
+      // P5: (re)build the concept graph (embed nodes + communities + canonical dedupe) only on a
+      // forced/daily pass — it can embed many nodes, so it must NOT run on the hot-path maintain.
       let concepts = null;
       if (force && this.cfg.conceptRouting?.enabled) {
         try { concepts = await refreshConceptGraph(this); } catch (e) { concepts = { error: e.message }; }
+      }
+
+      // Retention (forced/daily only): the log/audit tables grow without bound otherwise, and
+      // hard-deleted entries leave orphan vectors. Bounded history, deterministic cutoffs.
+      let retention = null;
+      if (force && (m.retentionDays ?? 0) > 0) {
+        try {
+          const cutoff = new Date(now - m.retentionDays * 864e5).toISOString();
+          retention = {
+            log: this.db.prepare('DELETE FROM log WHERE ts < ?').run(cutoff).changes,
+            audit: this.db.prepare('DELETE FROM audit WHERE ts < ?').run(cutoff).changes,
+            orphanVectors: this.db.prepare(
+              "DELETE FROM vectors WHERE entry_id IN (SELECT id FROM entries WHERE status='deleted')",
+            ).run().changes,
+          };
+        } catch (e) { retention = { error: e.message }; }
       }
 
       let projected = null;
@@ -200,7 +216,7 @@ export class Orchestrator {
         // Vault is a projection on possibly-remote storage — its failure must not fail maintenance.
         try { projected = this.project(); } catch (e) { projected = { error: e.message }; }
       }
-      const summary = { swept, promoted, projected, autoIngested, concepts, forced: force };
+      const summary = { swept, promoted, projected, autoIngested, concepts, retention, forced: force };
       this.db.logOp('maintain', summary);
       return summary;
     } finally { this._maintaining = false; }
@@ -221,6 +237,17 @@ export class Orchestrator {
 
   /** P5: (re)build the concept graph (embed nodes + communities) on demand. */
   async refreshConcepts(opts) { return refreshConceptGraph(this, opts); }
+
+  /** Curated concept merge: fold near-duplicate `fromLabel` into `toLabel` (alias retained).
+   *  For pairs the canonical key rightly keeps apart — judgment in, deterministic execution. */
+  async mergeConcepts(fromLabel, toLabel, { type = 'concept' } = {}) {
+    return governed(this.gov, 'merge-concepts', { fromLabel, toLabel, type }, () => {
+      const r = mergeConceptNodes(this, fromLabel, toLabel, type);
+      this.db.logOp('merge-concepts', r);
+      if (r.success) this.#markVaultDirty();
+      return r;
+    });
+  }
 
   /** Lazy maintenance hook — cheap when not due; never breaks the primary op. */
   async #maybeMaintain() {
@@ -258,7 +285,13 @@ export class Orchestrator {
     const g = this.graph.getGraph();
     const linked = new Set(g.edges.flatMap((e) => [e.from, e.to]));
     const orphans = g.nodes.filter((n) => !linked.has(n.id)).map((n) => n.label);
-    return { contradictions: conflicts.conflicts, orphans, summary: { nodes: g.nodes.length, edges: g.edges.length, entries: Object.values(this.memory.stats()).reduce((a, b) => a + b, 0) } };
+    // Wisdom is immune to distrust-archival (permanent tier), so buried-but-curated entries
+    // need a human eye — surface them here rather than silently keeping them ranked low.
+    const lowTrustWisdom = this.db.prepare(
+      "SELECT id, trust_score, content FROM entries WHERE status='active' AND tier='wisdom' AND trust_score < 0.3",
+    ).all().map((r) => ({ id: r.id, trust: r.trust_score, content: r.content.slice(0, 80) }));
+    const dupeConcepts = conceptDupeCandidates(this);
+    return { contradictions: conflicts.conflicts, orphans, lowTrustWisdom, dupeConcepts, summary: { nodes: g.nodes.length, edges: g.edges.length, entries: Object.values(this.memory.stats()).reduce((a, b) => a + b, 0) } };
   }
 
   async forget(id, { soft = true, force = false } = {}) {

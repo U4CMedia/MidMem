@@ -24,6 +24,24 @@ export function cosine(a, b) {
 export const tokenize = (s) => (s.toLowerCase().match(/[a-z0-9]+/g) || []).filter((w) => w.length >= 3);
 
 /**
+ * Canonical form of a concept label — the identity key that collapses trivial variants
+ * ("Inference Costs" / "inference costs" / "inference cost" → one node) without merging
+ * genuinely distinct concepts. Lowercase, punctuation → space, collapsed whitespace, and a
+ * conservative plural fold (trailing 's' on words ≥4 chars, never 'ss'). Deterministic;
+ * near-duplicates that differ by a real word ("AI inference costs") stay separate — those
+ * go through the curated merge path instead.
+ */
+export function canonicalConceptKey(label) {
+  return String(label ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .map((w) => (w.length >= 4 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w))
+    .join(' ');
+}
+
+/**
  * Build a safe FTS5 MATCH expression from free text (prevents the scaffold's
  * regex-injection / FTS-syntax-injection). Returns null if no usable tokens.
  */

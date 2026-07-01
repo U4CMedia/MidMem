@@ -55,14 +55,19 @@ export class TieredMemory {
     if (!ids?.length) return;
     const ts = nowISO();
     const refresh = this.cfg.maintenance?.refreshOnAccess !== false;
+    // One tier lookup + one transaction for the whole batch (this runs on every query).
+    const ph = ids.map(() => '?').join(',');
+    const tiers = new Map(this.db.prepare(`SELECT id, tier FROM entries WHERE id IN (${ph})`).all(...ids).map((r) => [r.id, r.tier]));
     const bump = this.db.prepare('UPDATE entries SET retrieval_count = retrieval_count + 1, last_accessed_at = ? WHERE id = ?');
     const renew = this.db.prepare('UPDATE entries SET expires_at = ? WHERE id = ?');
-    for (const id of ids) {
-      bump.run(ts, id);
-      if (!refresh) continue;
-      const tier = this.tier(this.db.prepare('SELECT tier FROM entries WHERE id=?').get(id)?.tier);
-      if (tier?.ttl) renew.run(new Date(Date.now() + tier.ttl).toISOString(), id);
-    }
+    this.db.tx(() => {
+      for (const id of ids) {
+        bump.run(ts, id);
+        if (!refresh) continue;
+        const tier = this.tier(tiers.get(id));
+        if (tier?.ttl) renew.run(new Date(Date.now() + tier.ttl).toISOString(), id);
+      }
+    });
   }
 
   /** Feedback loop: nudge trust_score (and helpful_count) up/down. Clamped to [0,1]. */

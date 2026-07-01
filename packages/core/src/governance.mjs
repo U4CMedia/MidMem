@@ -5,6 +5,7 @@
  *
  * This is the OpenClaw-side analog of fail-closed dispatch: deny-by-exception.
  */
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { sha12 } from './util.mjs';
 
@@ -16,14 +17,22 @@ export class GovernanceError extends Error {
 
 /** Default policy set realizing the approved guardrails. */
 export function defaultPolicies(cfg) {
-  const roots = cfg.sourceRoots.map((r) => path.resolve(r));
+  // Roots resolve through symlinks too (fail-soft: a not-yet-existing root keeps its resolved
+  // form) so both sides of the prefix check live in the same, real filesystem namespace.
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+  const roots = cfg.sourceRoots.map((r) => real(path.resolve(r)));
   const tierByName = Object.fromEntries(cfg.tiers.map((t) => [t.name, t]));
   return [
     {
       name: 'ingest-path-allowed',
       applies: (op) => op === 'ingest',
       check: (_op, ctx) => {
-        const p = path.resolve(ctx.path || '');
+        // realpath, not just resolve: a symlink planted INSIDE an allowed root must not reach
+        // a target outside it. Fail-closed — an unresolvable path (missing file) is denied here
+        // rather than trusted through to the read.
+        let p;
+        try { p = fs.realpathSync(path.resolve(ctx.path || '')); }
+        catch { return { allow: false, reason: `source path not resolvable: ${ctx.path}` }; }
         const ok = roots.some((r) => p === r || p.startsWith(r + path.sep));
         return ok ? { allow: true } : { allow: false, reason: `source outside allowed roots: ${p}` };
       },

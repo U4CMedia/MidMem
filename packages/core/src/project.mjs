@@ -7,7 +7,21 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { frontmatter, nowISO } from './util.mjs';
+import { frontmatter, nowISO, canonicalConceptKey } from './util.mjs';
+
+/** Remove stale projected pages: any .md in `dir` not in `keep`. The projection owns these
+ *  dirs outright (owner: llm), so a page with no live backing row is stale by definition —
+ *  without this, archived/expired entries stay visible in the vault forever. */
+function pruneDir(dir, keep) {
+  let pruned = 0;
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return 0; }
+  for (const f of names) {
+    if (!f.endsWith('.md') || keep.has(f)) continue;
+    try { fs.unlinkSync(path.join(dir, f)); pruned++; } catch { /* share hiccup — next pass */ }
+  }
+  return pruned;
+}
 
 /**
  * @param {import('./db.mjs').StateDB} db
@@ -18,11 +32,15 @@ export function projectVault(db, memory, graph, cfg) {
   const root = path.join(cfg.vaultPath, cfg.wikiPath);
   const entries = memory.listActive();
   let written = 0;
+  let pruned = 0;
+  const keepByDir = new Map(); // dir → Set of filenames that belong in this projection
 
   // Per-entry pages, grouped by tier.
   for (const e of entries) {
     const dir = path.join(root, e.tier);
     fs.mkdirSync(dir, { recursive: true });
+    if (!keepByDir.has(dir)) keepByDir.set(dir, new Set());
+    keepByDir.get(dir).add(`${e.id}.md`);
     const concepts = (e.concepts || []).map((c) => `[[${c.name}]]`);
     const fm = frontmatter({
       id: e.id, tier: e.tier, type: e.type, status: e.status,
@@ -38,11 +56,15 @@ export function projectVault(db, memory, graph, cfg) {
     written++;
   }
 
-  // Concept/entity pages from the graph.
+  // Concept/entity pages from the graph. Filenames come from the CANONICAL key, not the raw
+  // label — the vault share is case-insensitive, so case-variant labels used to collapse into
+  // one file nondeterministically; the canonical (lowercase) slug makes the collision impossible.
   const g = graph.getGraph();
   if (g.nodes.length) {
     const cdir = path.join(root, 'concepts');
     fs.mkdirSync(cdir, { recursive: true });
+    const ckeep = new Set();
+    keepByDir.set(cdir, ckeep);
     for (const n of g.nodes) {
       const links = graph.neighbors(n.id)
         .map((e) => { const other = e.from === n.id ? e.to : e.from; const o = graph.node(other); return o ? `[[${o.label}]] (${e.type})` : null; })
@@ -52,9 +74,19 @@ export function projectVault(db, memory, graph, cfg) {
         '', `# ${n.label}`, '', `Type: ${n.type}`, '',
         links.length ? `## Related\n${links.join('\n')}` : '',
       ].join('\n');
-      fs.writeFileSync(path.join(cdir, `${n.label.replace(/[^\w.-]+/g, '_')}.md`), body);
+      const fname = `${(canonicalConceptKey(n.label) || n.id).replace(/[^\w.-]+/g, '_')}.md`;
+      fs.writeFileSync(path.join(cdir, fname), body);
+      ckeep.add(fname);
       written++;
     }
+  }
+
+  // Prune pages whose backing row is gone (archived/expired/merged) from the dirs we own.
+  for (const [dir, keep] of keepByDir) pruned += pruneDir(dir, keep);
+  // A tier dir can also empty out entirely (everything expired) — sweep known tier dirs too.
+  for (const t of memory.tierNames) {
+    const dir = path.join(root, t);
+    if (!keepByDir.has(dir)) pruned += pruneDir(dir, new Set());
   }
 
   // index.md + log.md
@@ -74,5 +106,5 @@ export function projectVault(db, memory, graph, cfg) {
   for (const l of logs) logmd += `## [${l.ts}] ${l.operation}\n\`\`\`json\n${l.detail}\n\`\`\`\n\n`;
   fs.writeFileSync(path.join(root, 'log.md'), logmd);
 
-  return { written, vaultPath: root };
+  return { written, pruned, vaultPath: root };
 }

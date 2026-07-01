@@ -124,6 +124,9 @@ export function loadConfig(overrides = {}) {
       distrustBelow: 0.2, // archive non-permanent entries the feedback loop has buried
       factPromote: { minRetrievals: 3, minTrust: 0.6 }, // fact→memory: proven useful by use
       wisdomPromote: { minRetrievals: 5, minTrust: 0.7, minHelpful: 2 }, // memory→wisdom: earned curation
+      /** Bounded history: forced/daily maintain prunes log/audit rows older than this and
+       *  vectors orphaned by hard-deleted entries. 0 disables pruning. */
+      retentionDays: Number(env('RETENTION_DAYS') || 90),
     },
     /** Work-memory (Perplexity-Brain-style "memory about work"): record agent task attempts,
      *  sources used, dead ends, corrections, artifacts, decisions as first-class entries + graph

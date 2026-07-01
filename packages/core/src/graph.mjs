@@ -3,19 +3,34 @@
  * One graph representation (the scaffold had three). Used for query graph-context,
  * verification, and wikilink projection.
  */
-import { genId, nowISO, sha12, json } from './util.mjs';
+import { genId, nowISO, sha12, json, canonicalConceptKey } from './util.mjs';
 
 const EDGE_TYPES = new Set([
   'references', 'contradicts', 'supports', 'relates',
   // work-memory relations (task → source/artifact/concept/correction)
   'attempted', 'used_source', 'avoided', 'corrected_by', 'produced', 'decided', 'about',
+  // concept canonicalization: a merged-away variant points at its canonical node
+  'alias_of',
 ]);
+
+/** Node types whose labels are concepts (canonicalized identity). Identifier-like types
+ *  (task, source, artifact) keep exact lowercase identity — plural-folding a file path
+ *  or task name would merge things that are genuinely distinct. */
+export const CANON_NODE_TYPES = new Set(['concept', 'entity', 'topic', 'category']);
 
 export class GraphStore {
   constructor(db) { this.db = db; }
 
+  /** Identity key for a node label under its type's rules (shared with the dedupe pass). */
+  static nodeKey(type, label) {
+    return CANON_NODE_TYPES.has(type) ? canonicalConceptKey(label) : String(label).toLowerCase();
+  }
+
   upsertNode({ type, label, properties = {}, source = '' }) {
-    const id = `node-${sha12(`${type}:${label.toLowerCase()}`)}`; // stable per (type,label) → dedup
+    // Stable per (type, identity key) → trivial concept variants ("Inference Costs" /
+    // "inference cost") land on ONE node; the display label stays as given. Nodes written
+    // before canonicalization are folded in by the dedupe pass (forced/daily maintain).
+    const id = `node-${sha12(`${type}:${GraphStore.nodeKey(type, label)}`)}`;
     const ts = nowISO();
     this.db.prepare(`
       INSERT INTO nodes(id,type,label,properties,source,created_at,updated_at)

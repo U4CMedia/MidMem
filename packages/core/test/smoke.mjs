@@ -297,6 +297,57 @@ try {
   const crq = await o.query('hybrid retrieval vector fusion', { limit: 5 });
   ok(crq.results.length > 0, 'P5: retrieval still returns results with concept routing enabled (fail-soft)');
 
+  // 17. Governance realpath: a symlink inside an allowed root must not escape it.
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ocmw-outside-'));
+  try {
+    fs.writeFileSync(path.join(outside, 'secret.md'), 'outside the allowed roots entirely');
+    const link = path.join(tmp, 'escape.md');
+    fs.symlinkSync(path.join(outside, 'secret.md'), link);
+    await denies(() => o.ingest({ path: link, type: 'note' }), 'symlink escaping the source root blocked');
+    await denies(() => o.ingest({ path: path.join(tmp, 'does-not-exist.md'), type: 'note' }), 'unresolvable path denied (fail-closed)');
+  } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+
+  // 18. Concept canonicalization: trivial variants land on ONE node; identifiers are exempt.
+  const idA = o.graph.upsertNode({ type: 'concept', label: 'Inference Costs' });
+  const idB = o.graph.upsertNode({ type: 'concept', label: 'inference cost' });
+  ok(idA === idB, 'case/plural concept variants share one node id');
+  const tA = o.graph.upsertNode({ type: 'source', label: 'notes/plan.md' });
+  const tB = o.graph.upsertNode({ type: 'source', label: 'note/plan.md' });
+  ok(tA !== tB, 'identifier-like node types are NOT plural-folded (distinct paths stay distinct)');
+
+  // 19. Curated merge: near-duplicate folds into the target with its label kept as an alias.
+  o.graph.upsertNode({ type: 'concept', label: 'AI inference costs' });
+  const dupes = o.lint().dupeConcepts;
+  ok(dupes.some((d) => /ai inference costs/i.test(d.variant) || /ai inference costs/i.test(d.keep)), 'lint surfaces the near-duplicate pair as a merge candidate');
+  const mg = await o.mergeConcepts('AI inference costs', 'Inference Costs');
+  ok(mg.success, `curated merge folded '${mg.merged}' into '${mg.into}'`);
+  const target = o.graph.node(mg.intoId);
+  ok((target.properties.aliases || []).includes('AI inference costs'), 'merged label retained as an alias on the canonical node');
+  ok(o.lint().lowTrustWisdom.length === 0, 'lint reports no low-trust wisdom on a healthy store');
+
+  // 20. Dedupe sweep is idempotent (pre-canonicalization rows get folded, second pass is a no-op).
+  const dd = await o.refreshConcepts();
+  ok(dd.deduped === 0, 'canonical store dedupes to zero on a follow-up pass');
+
+  // 21. Projection hygiene: archived entries lose their vault page; concept slugs are canonical.
+  const staleEntry = await o.storeMemory({ content: 'ephemeral page that should be pruned from the vault', tier: 'fact', type: 'note' });
+  o.project();
+  const factDir = path.join(tmp, 'vault', 'LLM Wiki', 'fact');
+  ok(fs.existsSync(path.join(factDir, `${staleEntry.id}.md`)), 'active entry projects a vault page');
+  await o.forget(staleEntry.id, { soft: true });
+  const reproj = o.project();
+  ok(!fs.existsSync(path.join(factDir, `${staleEntry.id}.md`)) && reproj.pruned >= 1, `stale vault page pruned on reprojection (pruned=${reproj.pruned})`);
+  const cfiles = fs.readdirSync(path.join(tmp, 'vault', 'LLM Wiki', 'concepts'));
+  ok(cfiles.every((f) => f === f.toLowerCase()), 'concept page filenames are canonical lowercase (case-insensitive-share safe)');
+
+  // 22. Retention: forced maintain prunes old log/audit rows + vectors of hard-deleted entries.
+  o.db.prepare("INSERT INTO log(ts,operation,detail) VALUES('2020-01-01T00:00:00Z','ancient','{}')").run();
+  const doomed = await o.storeMemory({ content: 'to be hard deleted for vector retention', tier: 'fact', type: 'note' });
+  o.db.prepare("UPDATE entries SET status='deleted' WHERE id=?").run(doomed.id);
+  const mres = await o.maintain({ force: true });
+  ok(mres.retention && mres.retention.log >= 1, `retention pruned ${mres.retention?.log} ancient log rows`);
+  ok(o.db.prepare('SELECT COUNT(*) c FROM vectors WHERE entry_id=?').get(doomed.id).c === 0, 'retention removed vectors of hard-deleted entries');
+
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
 } catch (e) {
   console.error('\nFATAL:', e.stack); fail++;
