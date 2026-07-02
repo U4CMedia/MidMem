@@ -7,16 +7,23 @@ the **Model Context Protocol (MCP)**, a CLI, and a programmatic API.
 
 It is the broker between AI agents and their knowledge: agents `ingest`, `query`, and `remember`
 through the router; the knowledge store sits *behind* it. Built for the OpenClaw + Hermes
-dual-stack, but usable by **either system alone or both together** (see [Integration](#integration)).
+dual-stack, but pure-core and modular — it runs in **4 modes** (standalone curation · OpenClaw
+add-on · Hermes add-on · bridge) via exactly three surfaces: CLI, MCP, and the `bin/hook.mjs`
+pre/post-turn seam. See [Integration](#integration) + `docs/INTEGRATION-MODES.md`.
 
-> **Status:** foundation + cross-agent scope + native→middleware bridge + retrieval upgrades
-> (trust, trigram, token-budget, graph-boost, dim-guard) + selectable Qdrant vector backend +
-> hand-off memory gate, a self-driving lifecycle (decay / usage-earned promotion / auto-projection),
-> trigger-less `proactiveRecall`, and a DELEGATE-52 extraction-grounding check. Tested (smoke
-> **57/57**). Runnable Node ESM, **zero external dependencies**
-> (Node ≥ 22.5 built-ins only: `node:sqlite`, `crypto`, `fetch`).
-> `packages/core/` is the active foundation; the other `packages/*` are the superseded interim
-> scaffold, kept for reference only.
+> **Status (2026-07-02):** foundation + cross-agent scope + native→middleware bridge + retrieval
+> upgrades (trust, trigram, token-budget, graph-boost, dim-guard) + selectable Qdrant vector backend +
+> hand-off memory gate + self-driving lifecycle (decay / usage-earned promotion / auto-projection) +
+> trigger-less `proactiveRecall` + DELEGATE-52 extraction grounding + **work-memory events with
+> deterministic auto-ingest & categorization** (Brain adaptation) + **P4 temporal/workflow ranking
+> boosts** + **P5 concept-node embeddings, communities & query routing** + **P6 claim supersede /
+> contradiction / current()** + **P7 offline Brain-style benchmark** + **concept canonicalization
+> (case/plural dedupe, curated `merge-concepts`, alias-aware retrieval)** + **vault projection
+> pruning (stale pages removed; case-insensitive-share-safe slugs)** + **realpath ingest guard** +
+> **log/audit/vector retention**. Tested: smoke **90/90** + bench green (`npm run verify`).
+> Runnable Node ESM, **zero external dependencies** (Node ≥ 22.5 built-ins only: `node:sqlite`,
+> `crypto`, `fetch`). `packages/core/` is the active foundation; the other `packages/*` are the
+> superseded interim scaffold, kept for reference only.
 
 ---
 
@@ -38,7 +45,7 @@ sources ──ingest──► LLM extract (concepts/claims/embeddings) ─┐  (
               ▼                                    │
         Obsidian vault (projection)  ── query: FTS5 ⊕ trigram ⊕ vector (RRF) + trust/graph boosts ──►
               ▲                                    │
-              └──────────── MCP server (12 tools) ─┴──► OpenClaw / Hermes
+              └──────────── MCP server (21 tools) ─┴──► OpenClaw / Hermes
 ```
 
 - **`state.db` is the source of truth**; the markdown vault is a deterministic projection of it.
@@ -176,21 +183,33 @@ Two skills front the store; pick by how you're driving the stack:
 ```bash
 # No install needed (Node ≥ 22.5 built-ins only).
 cd packages/core
-node test/smoke.mjs                         # end-to-end self-test (offline) → 57/57
+node test/smoke.mjs                          # end-to-end self-test (offline) → 90/90
+npm run verify                               # smoke + Brain-style regression bench
 
 node bin/cli.mjs init                        # show resolved config
-node bin/cli.mjs ingest <file> --type note   # compile a source into the store
+node bin/cli.mjs ingest <file> --type note   # compile a source into the store (grounded)
 node bin/cli.mjs query "..." --graph         # hybrid query (+ graph context, --maxTokens budget)
 node bin/cli.mjs remember "..." --scope shared
 node bin/cli.mjs brief                        # tier/claim/graph + vector-health counts
-node bin/cli.mjs project                      # render the Obsidian vault
+node bin/cli.mjs lint                         # audit: contradictions, orphans, dupe-concept
+                                              #   candidates, low-trust wisdom
+node bin/cli.mjs project                      # render the Obsidian vault (prunes stale pages)
 node bin/cli.mjs bridge                       # pull native agent memory into the store
 node bin/cli.mjs handoff "<task>" --profile local|frontier   # build a hand-off memory brief
+node bin/cli.mjs work --kind task_attempt --task "..." ...   # record a work-memory event
+node bin/cli.mjs tasks                        # ongoing requests (open task nodes)
+node bin/cli.mjs claims "..."                 # current (freshest, non-superseded) claims
+node bin/cli.mjs contradictions               # deterministic claim-contradiction candidates
+node bin/cli.mjs merge-concepts "<from>" "<to>"   # curated near-duplicate concept merge
+node bin/cli.mjs refresh-concepts             # rebuild concept embeddings + communities + dedupe
+node bin/cli.mjs maintain --force             # full lifecycle pass (decay/promote/retention/project)
 ```
 
-### MCP tools (12)
+### MCP tools (21)
 `ingest` · `query` · `remember` · `recall` · `brief` · `audit` · `forget` · `archive` ·
-`promote` · `project` · `feedback` (trust) · `handoff_brief` (memory gate)
+`promote` · `project` · `feedback` (trust) · `handoff_brief` (memory gate) · `maintain` ·
+`proactive_recall` · `record_work` · `list_tasks` · `claims` · `claim_supersede` ·
+`claim_contradictions` · `refresh_concepts` · `concept_merge`
 
 **Hand-off memory gate ("firstware"):** `handoff_brief` builds a scoped, token-budgeted memory brief
 to inject into an agent hand-off (e.g. before an ACP spawn, which doesn't share context) so the
@@ -211,7 +230,13 @@ pull-depth). The gate *calls* the store; it doesn't replace it (firstware-on-mid
 | `MIDMEM_EXTRACT_MODEL` | (chat model) | Extraction model |
 | `MIDMEM_AGENT_SCOPE` | `shared` | This consumer's scope: `openclaw`/`hermes`/`shared` |
 | `MIDMEM_LLM_ENABLED` | `1` | Set `0` to force offline/deterministic fallbacks |
-| `MIDMEM_SOURCE_ROOTS` | repo/workspace/vault dirs | Allowed ingest roots (path-traversal guard) |
+| `MIDMEM_SOURCE_ROOTS` | repo/workspace/vault dirs | Allowed ingest roots (realpath'd path-traversal guard) |
+| `MIDMEM_GROUNDING_MIN_OVERLAP` | `0.5` | DELEGATE-52 grounding threshold (quarantine below) |
+| `MIDMEM_AUTO_INGEST` | `1` | maintain() auto-bridges agent work/session dirs |
+| `MIDMEM_MAINTENANCE` | `1` | Self-driving lifecycle (decay/promotion/projection) |
+| `MIDMEM_RETENTION_DAYS` | `90` | Forced maintain prunes log/audit rows + orphan vectors older than this (0 = off) |
+| `MIDMEM_WORK_MEMORY` | `1` | Work-memory events (`record_work`, task tracking) |
+| `MIDMEM_CONCEPT_ROUTING` | `1` | P5 concept-node routing + canonical dedupe in forced maintain |
 
 ---
 
@@ -221,19 +246,27 @@ Lighter alternative: `nomic-embed-text-v1.5` (768-dim). Pick one **before first 
 it across any vector-store migration (no re-embedding; the dimension guard enforces consistency).
 
 ## Roadmap
-- Vector store → **Qdrant** (decided over ChromaDB; `MIDMEM_VECTOR_BACKEND=qdrant`, adapter built — validate against a live instance).
-- Vault → **NAS share** (change `OBSIDIAN_VAULT_PATH` only).
-- **Decay scanner + semantic near-dup report** (memory-os borrows; need the embed model loaded first).
+- ✅ ~~Vault → NAS share~~ — done 2026-06-29 (`OBSIDIAN_VAULT_PATH=/mnt/OpenDuck-Vault`; projection
+  uses canonical lowercase slugs + stale-page pruning, so the case-insensitive CIFS share is safe).
+- ✅ ~~Decay scanner + near-dup report~~ — done: lifecycle decay is self-driving; `lint` reports
+  `dupeConcepts` candidates (curated `merge-concepts` applies them) + `lowTrustWisdom`.
+- Vector store → **Qdrant** (decided over ChromaDB; `MIDMEM_VECTOR_BACKEND=qdrant`, adapter built —
+  live path pending a running instance on the NAS; end-state pairs with a vLLM operator on Proxmox).
+- **Research-wave promotion + topic tags** (2026-07-01 review): deterministic trigger (N
+  same-community ingests within M days) surfaces a wave in `brief`; synthesis stays curated.
 - **Fine-tuned-LLM `wisdom` tier** trained from curated wisdom (weight-space long-term memory).
-- Pre-LLM-call memory gate (per-turn brief, sibling to the hand-off gate); TypeScript migration; bidirectional vault sync.
+- Pre-LLM-call memory gate (per-turn brief, sibling to the hand-off gate); TypeScript migration;
+  bidirectional vault sync. Scale note: per-query concept scans are fine at ~250 entries; index
+  concepts into a table around ~50K.
 
 ## Repository layout
 ```
 packages/core/         # ← active foundation (this README describes it)
   src/                 # db, memory, retrieval, vectorstore, embeddings, extract, graph, claims,
-                       # verify, governance, project, bridge, handoff, orchestrator, config
-  bin/                 # cli.mjs, mcp-server.mjs
-  test/smoke.mjs       # end-to-end self-test
+                       # verify, governance, project, bridge, handoff, workmemory, concepts,
+                       # orchestrator, config
+  bin/                 # cli.mjs, mcp-server.mjs, hook.mjs (pre/post-turn seam — the 4-modes caller)
+  test/                # smoke.mjs (90 checks) + bench.mjs (Brain-style regression gate)
 packages/{orchestrator,tiered-memory,obsidian-bridge,sigma-verifier,mcp-memory}/
                        # legacy interim scaffold — reference only, superseded by core
 wiki/ memory/ graph/ claims/ audit/ config/   # scaffold-era dirs (vault is now external)
