@@ -61,3 +61,7 @@ playwright-output/
 # db backups (any suffix) — memory content must never reach a remote
 state.db.bak*
 state.db-*
+
+# Python bytecode
+__pycache__/
+*.pyc
