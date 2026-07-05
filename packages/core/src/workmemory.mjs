@@ -1,0 +1,118 @@
+/**
+ * Work-memory — Perplexity-Brain-style "memory about work, not just the user".
+ *
+ * Records what agents DID — task attempts, sources used, dead ends, corrections,
+ * artifacts, decisions — as first-class, provenance-linked entries + typed graph
+ * edges, and deterministically CATEGORIZES every ingest so the LLM Wiki tracks
+ * ongoing requests by kind. No LLM in this path (DELEGATE-52 discipline: the
+ * categorizer is deterministic; grounding still gates any extracted content upstream).
+ *
+ * Pure core: zero stack-specific code, so it works identically standalone, as an
+ * OpenClaw add-on, as a Hermes add-on, or bridged across both (one shared state.db).
+ */
+import { nowISO } from './util.mjs';
+
+/**
+ * First-class work-event kinds.
+ *  tier  — where the event lands (corrections/decisions/dead-ends are durable `memory`;
+ *          raw attempts/sources/artifacts are cheap `fact` and decay unless they prove useful).
+ *  edge  — the task→X graph relation recorded for the event.
+ */
+export const WORK_EVENT_TYPES = {
+  task_attempt: { tier: 'fact',   edge: 'attempted' },
+  source_used:  { tier: 'fact',   edge: 'used_source' },
+  dead_end:     { tier: 'memory', edge: 'avoided' },       // a warning worth keeping for next time
+  correction:   { tier: 'memory', edge: 'corrected_by' },  // highest-value: reshapes future behavior
+  artifact:     { tier: 'fact',   edge: 'produced' },
+  decision:     { tier: 'memory', edge: 'decided' },
+};
+export const WORK_EVENT_NAMES = Object.keys(WORK_EVENT_TYPES);
+
+/** Categories every ingest is tagged with (provenance.category) — lets the store track
+ *  ongoing requests by kind without an LLM. Order matters: first match wins. */
+const CATEGORY_RULES = [
+  ['correction', /\b(correct(ion|ed)?|mistake|wrong|retract|misremember|actually it)\b/i],
+  ['incident',   /\b(outage|broke|failed|crash|lost access|unresponsive|regression|\b40\d\b|\b50\d\b)/i],
+  ['build',      /\b(build|implement|scaffold|refactor|deploy|wrote a|created (a|the)|added (a|the)|patch|pull request|\bPR\b)/i],
+  ['research',   /\b(research|analy[sz]e|compare|investigat|survey|arxiv|paper|synthesi[sz])/i],
+  ['decision',   /\b(decid|chose|opted for|recommend|trade-?off|we will|going with)\b/i],
+  ['config',     /\b(config|setting|env var|flag|enable|disable|gateway|systemd|plugin|webhook)\b/i],
+  ['reference',  /\b(https?:\/\/|documentation|reference doc|api docs)\b/i],
+];
+
+/** Deterministic ingest categorizer (no LLM). Returns a single category string. */
+export function categorizeIngest({ type, content = '', title = '' } = {}) {
+  if (WORK_EVENT_NAMES.includes(type)) return type;       // a work event is its own category
+  if (type === 'session') return 'session';
+  const hay = `${title}\n${content}`.slice(0, 2000);
+  for (const [cat, re] of CATEGORY_RULES) if (re.test(hay)) return cat;
+  return 'knowledge';
+}
+
+/**
+ * Record one work event as a provenance-linked entry (+ typed graph edges).
+ * @param {import('./orchestrator.mjs').Orchestrator} o
+ * @param {{kind:string, task?:string, content?:string, outcome?:string, status?:string,
+ *          source?:string, artifact?:string, profile?:string, related?:string,
+ *          concepts?:Array<{name:string,type?:string}>, scope?:string}} ev
+ */
+export async function recordWorkEvent(o, ev = {}) {
+  const spec = WORK_EVENT_TYPES[ev.kind];
+  if (!spec) throw new Error(`unknown work-event kind: ${ev.kind} (expected: ${WORK_EVENT_NAMES.join(', ')})`);
+  const scope = ev.scope || o.cfg.agentScope;
+  const status = ev.status || (ev.kind === 'task_attempt' ? 'open' : 'done');
+  const task = (ev.task || '').trim();
+
+  const parts = [task ? `[${ev.kind}] ${task}` : `[${ev.kind}]`];
+  if (ev.content) parts.push(ev.content);
+  if (ev.outcome) parts.push(`Outcome: ${ev.outcome}`);
+  if (ev.source) parts.push(`Source: ${ev.source}`);
+  if (ev.artifact) parts.push(`Artifact: ${ev.artifact}`);
+  const content = parts.join(' — ');
+
+  // Stored through the governed storeMemory path: it embeds + logs + maintains like any entry.
+  const res = await o.storeMemory({ content, type: ev.kind, tier: spec.tier, scope, concepts: ev.concepts });
+  // Tag provenance with the category + structured work fields (storeMemory leaves provenance null
+  // when no source; we write the full object — no reliance on SQLite JSON1).
+  const prov = {
+    category: ev.kind, recordedAt: nowISO(), chain: [{ step: 'record_work', kind: ev.kind }],
+    work: { kind: ev.kind, task, status, outcome: ev.outcome ?? null, source: ev.source ?? null, artifact: ev.artifact ?? null, profile: ev.profile ?? null, related: ev.related ?? null },
+  };
+  o.db.prepare('UPDATE entries SET provenance=?, updated_at=? WHERE id=?').run(JSON.stringify(prov), nowISO(), res.id);
+
+  // Graph: a stable task node (status tracked here) + typed edges to source/artifact/concepts.
+  if (task) {
+    // Only a task_attempt sets the task's status; other events (correction, source_used, …) link to
+    // the task but must NOT flip its open/done state — preserve the existing status (default 'open').
+    const existing = o.graph.byType('task').find((n) => n.label === task);
+    const taskStatus = ev.kind === 'task_attempt' ? status : (existing?.properties?.status || 'open');
+    const taskNode = o.graph.upsertNode({ type: 'task', label: task, source: 'work', properties: { status: taskStatus } });
+    if (ev.source)   o.graph.upsertEdge({ from: taskNode, to: o.graph.upsertNode({ type: 'source',   label: ev.source,   source: 'work' }), type: spec.edge,   source: 'work' });
+    if (ev.artifact) o.graph.upsertEdge({ from: taskNode, to: o.graph.upsertNode({ type: 'artifact', label: ev.artifact, source: 'work' }), type: 'produced', source: 'work' });
+    for (const c of ev.concepts || []) o.graph.upsertEdge({ from: taskNode, to: o.graph.upsertNode({ type: c.type || 'concept', label: c.name, source: 'work' }), type: 'about', source: 'work' });
+  }
+  o.db.logOp('record-work', { kind: ev.kind, entry: res.id, task: task.slice(0, 80), status, category: ev.kind });
+  return { success: true, kind: ev.kind, status, category: ev.kind, ...res };
+}
+
+/** Ongoing requests = task nodes not yet marked done (latest status wins via upsert). */
+export function listOpenTasks(o) {
+  return o.graph.byType('task')
+    .filter((n) => (n.properties?.status || 'open') !== 'done')
+    .map((n) => ({ task: n.label, status: n.properties?.status || 'open', updated_at: n.updated_at }))
+    .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+}
+
+/**
+ * Deterministic background capture for `maintain()` — pull each stack's session/memory
+ * dirs into the store via the (idempotent, hash-deduped) bridge so agent work is
+ * auto-ingested without anyone remembering to run it. Projection is left to maintain's
+ * own step. Best-effort: never throws into the maintenance loop.
+ */
+export async function consolidateWork(o) {
+  try {
+    const { bridgeMemory } = await import('./bridge.mjs');
+    const r = await bridgeMemory(o, { project: false });
+    return { bridged: r.ingested, skipped: r.skipped, errors: r.errors.length };
+  } catch (e) { return { error: e.message }; }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@openclaw-middleware/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Rebuilt foundation: single state.db source-of-truth + hybrid RAG (FTS5 ⊕ vector) + tiered memory + typed graph + claims + fail-closed governance + Obsidian projection. Runnable Node ESM, zero external deps.",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "bin": {
+    "ocmw": "./bin/cli.mjs",
+    "ocmw-mcp": "./bin/mcp-server.mjs"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs",
+    "bench": "node test/bench.mjs",
+    "verify": "node test/smoke.mjs && node test/bench.mjs",
+    "mcp": "node bin/mcp-server.mjs",
+    "cli": "node bin/cli.mjs"
+  },
+  "engines": { "node": ">=22.5.0" }
+}

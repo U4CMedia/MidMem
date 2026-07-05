@@ -1,0 +1,358 @@
+/**
+ * End-to-end smoke test (offline, no external deps, no live LLM).
+ * Exercises: ingest → hybrid retrieval → governance (fail-closed) → verify → projection.
+ */
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { Orchestrator, GovernanceError, checkGrounding, groundingScore, categorizeIngest, WORK_EVENT_NAMES } from '../src/index.mjs';
+
+let pass = 0, fail = 0;
+const ok = (cond, msg) => { if (cond) { pass++; console.log(`  ✓ ${msg}`); } else { fail++; console.log(`  ✗ ${msg}`); } };
+async function denies(fn, msg) { try { await fn(); fail++; console.log(`  ✗ ${msg} (expected denial)`); } catch (e) { ok(e instanceof GovernanceError, `${msg} → ${e.message}`); } }
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocmw-'));
+const o = new Orchestrator({
+  dbPath: path.join(tmp, 'state.db'),
+  vaultPath: path.join(tmp, 'vault'),
+  llmEnabled: false,
+  sourceRoots: [tmp],
+  // Hermetic: don't let maintenance auto-bridge the real ~/.openclaw / ~/.hermes dirs into the test db.
+  autoIngest: { enabled: false, onMaintain: false },
+});
+
+try {
+  console.log('Foundation smoke test\n');
+
+  // 1. Ingest
+  const src = path.join(tmp, 'sample.md');
+  fs.writeFileSync(src, 'Hybrid retrieval fuses BM25 lexical search with vector cosine similarity. ' +
+    'Reciprocal Rank Fusion combines the two ranked lists. Vectors come from a local embedding model.');
+  const ing = await o.ingest({ path: src, type: 'note', title: 'Hybrid RAG' });
+  ok(ing.success, 'ingest succeeded');
+  ok(ing.concepts > 0, `extracted ${ing.concepts} concepts (fallback mode=${ing.mode})`);
+  ok(ing.claims > 0, `extracted ${ing.claims} claims`);
+
+  // 2. Governance: path traversal blocked
+  await denies(() => o.ingest({ path: '/etc/passwd', type: 'note' }), 'ingest outside source roots blocked');
+
+  // 3. More memories + hybrid query
+  await o.storeMemory({ content: 'The fact tier stores raw unprocessed knowledge from sources.', tier: 'fact', type: 'note' });
+  await o.storeMemory({ content: 'A sourdough recipe needs flour, water, salt and starter.', tier: 'memory', type: 'note' });
+  const q = await o.query('vector cosine fusion retrieval', { limit: 5 });
+  ok(q.results.length > 0, `hybrid query returned ${q.results.length} results`);
+  ok(/hybrid|vector|fusion|retrieval/i.test(q.results[0].content), `top result is relevant: "${q.results[0].content.slice(0, 50)}…"`);
+  ok(q.results[0].rank.fts != null || q.results[0].rank.vector != null, 'top result has lexical and/or vector rank components');
+
+  // 4. Governance: curated-only wisdom tier
+  await denies(() => o.storeMemory({ content: 'curated truth', tier: 'wisdom', type: 'note' }), 'uncurated write to wisdom tier blocked');
+  const w = await o.storeMemory({ content: 'curated truth', tier: 'wisdom', type: 'note', curated: true });
+  ok(w.success, 'curated write to wisdom tier allowed');
+
+  // 5. Governance: hard delete guard
+  await denies(() => o.forget(w.id, { soft: false }), 'hard delete without force blocked');
+  const soft = await o.forget(w.id, { soft: true });
+  ok(soft.success, 'soft delete allowed');
+
+  // 6. Verify + lint
+  const lint = o.lint();
+  ok(Array.isArray(lint.contradictions), `lint ran (${lint.summary.entries} entries, ${lint.summary.nodes} nodes)`);
+
+  // 7. Projection to vault
+  const proj = o.project();
+  ok(proj.written > 0, `projected ${proj.written} files to vault`);
+  ok(fs.existsSync(path.join(proj.vaultPath, 'index.md')), 'index.md projected');
+
+  // 8. Brief
+  const b = await o.brief();
+  ok(b.tiers.memory >= 1 && b.tiers.fact >= 1, `brief reports tier counts: ${JSON.stringify(b.tiers)}`);
+  ok(b.vectors?.backend === 'sqlite', `vector backend reported via brief: ${b.vectors?.backend}`);
+
+  // 9. Cross-agent scope isolation (#2)
+  await o.storeMemory({ content: 'OPENCLAW_ONLY beacon zebra marker', tier: 'memory', scope: 'openclaw' });
+  await o.storeMemory({ content: 'HERMES_ONLY beacon zebra marker', tier: 'memory', scope: 'hermes' });
+  const ocq = await o.query('beacon zebra marker', { scopes: ['openclaw'], limit: 5 });
+  ok(ocq.results.some((r) => /OPENCLAW_ONLY/.test(r.content)) && !ocq.results.some((r) => /HERMES_ONLY/.test(r.content)),
+    'scope filter returns openclaw entry, excludes hermes');
+  const shq = await o.query('beacon zebra marker', { scopes: ['shared'], limit: 5 });
+  ok(!shq.results.some((r) => /OPENCLAW_ONLY|HERMES_ONLY/.test(r.content)), 'shared-scope query excludes both private entries');
+
+  // 10. Native→middleware bridge + hash dedup (#1)
+  const srcDir = path.join(tmp, 'bridge-src');
+  fs.mkdirSync(srcDir, { recursive: true });
+  fs.writeFileSync(path.join(srcDir, 'note1.md'), 'Bridged note: retrieval-augmented generation fuses search with generation.');
+  const { bridgeMemory } = await import('../src/index.mjs');
+  const b1 = await bridgeMemory(o, { sources: [{ dir: srcDir, scope: 'openclaw', type: 'note' }], project: false });
+  ok(b1.ingested === 1, `bridge ingested ${b1.ingested} new file`);
+  const b2 = await bridgeMemory(o, { sources: [{ dir: srcDir, scope: 'openclaw', type: 'note' }], project: false });
+  ok(b2.ingested === 0 && b2.skipped === 1, `bridge re-run is idempotent (dedup): ingested ${b2.ingested}, skipped ${b2.skipped}`);
+
+  // 11. Trust feedback loop (borrow)
+  const fb = await o.storeMemory({ content: 'Trust feedback target about kubernetes operators.', tier: 'memory', scope: 'shared' });
+  const before = o.recall(fb.id).trust_score;
+  o.feedback(fb.id, true);
+  ok(o.recall(fb.id).trust_score > before, `feedback raised trust ${before} → ${o.recall(fb.id).trust_score}`);
+
+  // 12. Token-budget retrieval (borrow)
+  const tb = await o.query('hybrid vector retrieval', { maxTokens: 80, limit: 10 });
+  const totalTok = tb.results.reduce((s, r) => s + Math.ceil(r.content.length / 4), 0);
+  ok(totalTok <= 80, `token budget respected (${totalTok} ≤ 80 tok across ${tb.results.length} results)`);
+
+  // 13. Trigram substring lane (borrow) — query a non-token substring
+  await o.storeMemory({ content: 'The authentication subsystem uses OAuth2 tokens.', tier: 'memory', scope: 'shared' });
+  const tg = await o.query('thenticat', { scopes: ['shared'], limit: 5 });
+  ok(tg.results.some((r) => /authentication/i.test(r.content)), 'trigram lane finds substring (non-token) match');
+
+  // 14. Embedding dimension guard (borrow)
+  let dimGuard = false;
+  try {
+    await o.memory.upsertVector('dimtest-1', new Array(1024).fill(0.1), 'real-model-a', 'lmstudio');
+    await o.memory.upsertVector('dimtest-2', new Array(768).fill(0.1), 'real-model-b', 'lmstudio');
+  } catch (e) { dimGuard = /dim mismatch/i.test(e.message); }
+  ok(dimGuard, 'dim guard rejects mixing real-model vector dimensions');
+
+  // 15. Hand-off memory gate (firstware) — local + frontier profiles
+  const hbLocal = await o.handoffBrief({ task: 'hybrid retrieval vector fusion', profile: 'local' });
+  ok(/AUTHORITATIVE MEMORY/.test(hbLocal.brief) && hbLocal.count >= 1,
+    `local hand-off brief: authoritative framing, ${hbLocal.count} items, ~${hbLocal.tokensEstimate} tok`);
+  const hbFrontier = await o.handoffBrief({ task: 'hybrid retrieval vector fusion', profile: 'frontier' });
+  ok(/Retrieved memory/.test(hbFrontier.brief) && /recall|query/.test(hbFrontier.brief) && /trust/.test(hbFrontier.brief),
+    'frontier hand-off brief: provenance/trust + invites pull');
+  const hbEmpty = await o.handoffBrief({ task: 'anything', profile: 'local', scopes: ['void_scope'] });
+  ok(hbEmpty.count === 0 && /no prior knowledge/i.test(hbEmpty.brief), 'empty hand-off brief degrades cleanly');
+
+  // 16. Archive default spares permanent tiers (wisdom must survive a routine archive)
+  const oldWisdom = await o.storeMemory({ content: 'Ancient curated wisdom entry.', tier: 'wisdom', type: 'note', curated: true });
+  o.db.prepare("UPDATE entries SET updated_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(oldWisdom.id);
+  o.archive({ olderThanMs: 1 * 864e5 });
+  ok(o.recall(oldWisdom.id).status === 'active', 'default archive leaves ttl-0 (wisdom) entries active');
+  o.archive({ olderThanMs: 1 * 864e5, tiers: ['wisdom'] });
+  ok(o.recall(oldWisdom.id).status === 'archived', 'explicit tiers:[wisdom] still archives it');
+
+  // 17. Failed ingest must not poison the dedup hash (sources row commits with the entry)
+  const poison = path.join(tmp, 'poison.md');
+  fs.writeFileSync(poison, 'Content whose first ingest attempt fails must remain ingestable.');
+  const origStore = o.memory.store.bind(o.memory);
+  o.memory.store = () => { throw new Error('injected store failure'); };
+  let ingestFailed = false;
+  try { await o.ingest({ path: poison, type: 'note' }); } catch { ingestFailed = true; }
+  o.memory.store = origStore;
+  ok(ingestFailed, 'injected ingest failure propagated');
+  const retry = await o.ingest({ path: poison, type: 'note' });
+  ok(retry.success && !retry.skipped, 'retry after failed ingest stores the content (hash not poisoned)');
+
+  // 18. Promote refreshes expires_at for the destination tier (single-write lifecycle)
+  const pr = await o.storeMemory({ content: 'Fact destined for wisdom.', tier: 'fact', type: 'note' });
+  ok(o.recall(pr.id).expires_at != null, 'fact entry starts with an expiry');
+  await o.promote(pr.id, 'wisdom', { curated: true });
+  const promoted = o.recall(pr.id);
+  ok(promoted.tier === 'wisdom' && promoted.status === 'active' && promoted.expires_at == null,
+    'promotion to wisdom clears expiry and stays active');
+
+  // 19. Supersede-on-reingest: editing a file archives its earlier entries (any tier)
+  const evolving = path.join(tmp, 'evolving.md');
+  fs.writeFileSync(evolving, 'First revision of an evolving document about pelican migration routes.');
+  const rev1 = await o.ingest({ path: evolving, type: 'note' });
+  await o.promote(rev1.entry.id, 'wisdom', { curated: true });
+  fs.writeFileSync(evolving, 'Second revision of the evolving document — the migration routes shifted north.');
+  const rev2 = await o.ingest({ path: evolving, type: 'note' });
+  ok(rev2.superseded.length === 1 && rev2.superseded[0] === rev1.entry.id,
+    'reingest of a changed file supersedes its prior entry (even after wisdom promotion)');
+  ok(o.recall(rev1.entry.id).status === 'archived' && o.recall(rev2.entry.id).status === 'active',
+    'old revision archived, new revision active');
+  const rev3 = await o.ingest({ path: evolving, type: 'note' });
+  ok(rev3.skipped === true && o.recall(rev2.entry.id).status === 'active',
+    'unchanged reingest still dedups and supersedes nothing');
+
+  // 26. Self-driving lifecycle: decay (lease expiry, lease renewal, distrust) + usage-earned promotion.
+  const lo = new Orchestrator({
+    dbPath: path.join(tmp, 'lifecycle.db'), vaultPath: path.join(tmp, 'vault2'), llmEnabled: false, sourceRoots: [tmp],
+    autoIngest: { enabled: false, onMaintain: false }, // hermetic: no real-dir bridging during maintain()
+    tiers: [
+      { name: 'fact', ttl: 100, autoPromote: true, curatedOnly: false }, // 100ms lease for the test
+      { name: 'memory', ttl: 60_000, autoPromote: true, curatedOnly: false },
+      { name: 'wisdom', ttl: 0, autoPromote: false, curatedOnly: true },
+    ],
+    maintenance: { enabled: true, intervalMs: 0, refreshOnAccess: true, distrustBelow: 0.2, factPromote: { minRetrievals: 3, minTrust: 0.6 }, wisdomPromote: { minRetrievals: 5, minTrust: 0.7, minHelpful: 2 } },
+  });
+
+  const dying = await lo.storeMemory({ content: 'ephemeral quokka migration sighting', tier: 'fact', type: 'note' });
+  const renewing = await lo.storeMemory({ content: 'renewable goose telemetry beacon', tier: 'fact', type: 'note' });
+  const expBefore = lo.recall(renewing.id).expires_at;
+  await new Promise((r) => setTimeout(r, 10));
+  const rq = await lo.query('renewable goose telemetry', { limit: 5 });
+  ok(rq.results.some((x) => x.id === renewing.id), 'lifecycle: entry retrievable before its lease expires');
+  ok(lo.recall(renewing.id).expires_at > expBefore, 'retrieval renews the lease (decay-by-disuse)');
+
+  await new Promise((r) => setTimeout(r, 120)); // both fact leases lapse (no further use)
+  const xq = await lo.query('ephemeral quokka migration', { limit: 5 });
+  ok(!xq.results.some((x) => x.id === dying.id), 'expired entry excluded from retrieval even before a sweep');
+  ok(lo.recall(dying.id).status === 'archived',
+    'lazy maintenance hooked to the query swept the expired lease (no explicit maintain call)');
+
+  const hero = await lo.storeMemory({ content: 'frequently used wombat routing heuristic', tier: 'fact', type: 'note' });
+  lo.db.prepare('UPDATE entries SET retrieval_count=3 WHERE id=?').run(hero.id);
+  const mt2 = await lo.maintain({ force: true });
+  ok(mt2.promoted.some((p) => p.id === hero.id && p.to === 'memory') && lo.recall(hero.id).tier === 'memory',
+    'well-used fact auto-promotes to memory');
+  ok(mt2.projected && typeof mt2.projected.written === 'number', 'maintain auto-projects the vault when state changed');
+
+  lo.db.prepare('UPDATE entries SET retrieval_count=6, trust_score=0.75, helpful_count=2 WHERE id=?').run(hero.id);
+  const mt3 = await lo.maintain({ force: true });
+  ok(mt3.promoted.some((p) => p.id === hero.id && p.to === 'wisdom' && p.curated) && lo.recall(hero.id).tier === 'wisdom',
+    'helpful-feedback memory auto-promotes to wisdom (usage-earned curation)');
+  ok(lo.recall(hero.id).expires_at == null, 'auto-promotion to wisdom clears the lease (permanent tier)');
+
+  const distrusted = await lo.storeMemory({ content: 'repeatedly wrong pelican advice', tier: 'memory', type: 'note' });
+  lo.db.prepare('UPDATE entries SET trust_score=0.1 WHERE id=?').run(distrusted.id);
+  const mt4 = await lo.maintain({ force: true });
+  ok(mt4.swept.distrusted.includes(distrusted.id) && lo.recall(distrusted.id).status === 'archived',
+    'distrusted entry (negative feedback) decays to archived');
+
+  lo.cfg.maintenance.intervalMs = 3600e3;
+  const mt5 = await lo.maintain();
+  ok(mt5.skipped === true && mt5.reason === 'not_due', 'maintain throttles between intervals (lazy hook stays cheap)');
+  lo.close();
+
+  // 27. Phase-1 trigger-less recall: self-gating + budget + surfaced-only lease renewal.
+  await o.storeMemory({ content: 'The reciprocal rank fusion constant k defaults to 60 in the retrieval layer.', tier: 'memory', type: 'note' });
+  const relevant = await o.proactiveRecall('how does reciprocal rank fusion scoring work', { minScore: 0.01 });
+  ok(relevant.inject && /fusion|rank/i.test(relevant.inject), 'proactiveRecall surfaces an inject block for a relevant message');
+  ok(relevant.used.length > 0, `proactiveRecall returned ${relevant.used.length} surfaced id(s)`);
+  const irrelevant = await o.proactiveRecall('quokka marsupial breakfast cereal coupons', { minScore: 0.5 });
+  ok(irrelevant.inject === null && irrelevant.used.length === 0, 'proactiveRecall injects nothing when nothing clears the threshold (cheap on irrelevant turns)');
+  // surfaced-only renewal: a lexically-unrelated entry stays below the threshold, so its lease is untouched
+  const untouched = await o.storeMemory({ content: 'isolated penguin telemetry note', tier: 'fact', type: 'note' });
+  const leaseBefore = o.recall(untouched.id).expires_at;
+  await o.proactiveRecall('reciprocal rank fusion', { minScore: 0.03 });
+  ok(o.recall(untouched.id).expires_at === leaseBefore, 'proactiveRecall does not renew leases for entries it did not surface');
+
+  // 28. Extraction grounding (DELEGATE-52 safeguard): deterministic, quarantines confabulation.
+  const gsrc = 'Cats are small domesticated mammals that purr and hunt mice in the garden.';
+  const gsplit = checkGrounding(gsrc, [
+    { content: 'Cats hunt mice' },                                  // grounded
+    { content: 'Quantum entanglement enables faster-than-light teleportation' }, // confabulated
+  ], (x) => x.content, 0.5);
+  ok(gsplit.grounded.length === 1 && /cats/i.test(gsplit.grounded[0].content), 'grounding keeps a source-grounded claim');
+  ok(gsplit.ungrounded.length === 1 && /quantum/i.test(gsplit.ungrounded[0].content), 'grounding quarantines a confabulated claim');
+  ok(gsplit.grounded[0].groundingScore === 1, 'grounded claim scores 1.0');
+  ok(groundingScore(gsrc, 'teleportation quantum') === 0, 'fully-ungrounded phrase scores 0');
+  ok(groundingScore(gsrc, 'the of a to') === 1, 'all-stopword phrase is treated as grounded (1.0)');
+
+  // ingest integration: result carries a grounding report; offline-fallback claims are source
+  // sentences, so nothing is quarantined on a normal doc.
+  const gfile = path.join(tmp, 'grounding-src.md');
+  fs.writeFileSync(gfile, 'Reciprocal rank fusion merges ranked lists. Vector cosine similarity scores embeddings. The collector reads systemd and produces a status snapshot.');
+  const ging = await o.ingest({ path: gfile, type: 'note' });
+  ok(ging.grounding && typeof ging.grounding.summaryScore === 'number', `ingest returns a grounding report (summaryScore=${ging.grounding?.summaryScore})`);
+  ok(ging.grounding.claimsQuarantined === 0, 'a faithful doc quarantines no claims');
+
+  // 11. Work-memory: deterministic ingest categorization (no LLM)
+  ok(categorizeIngest({ type: 'note', content: 'We need to research and compare these arxiv papers' }) === 'research', 'categorizer tags research');
+  ok(categorizeIngest({ type: 'note', content: 'Implement the build and add a PR' }) === 'build', 'categorizer tags build');
+  ok(categorizeIngest({ type: 'note', content: 'the gateway was unresponsive, a 404 outage' }) === 'incident', 'categorizer tags incident');
+  ok(categorizeIngest({ type: 'correction', content: 'x' }) === 'correction', 'a work-event type is its own category');
+  ok(categorizeIngest({ type: 'note', content: 'plain neutral statement about flour' }) === 'knowledge', 'uncategorized falls back to knowledge');
+
+  // 12. Work-memory events: record → entry + graph edges + open-task tracking
+  ok(WORK_EVENT_NAMES.includes('task_attempt') && WORK_EVENT_NAMES.includes('correction'), 'work-event kinds registered');
+  const wt = await o.recordWork({ kind: 'task_attempt', task: 'Wire proactive recall', content: 'starting the build', source: 'brain-memo.md' });
+  ok(wt.success && wt.kind === 'task_attempt' && wt.status === 'open', 'task_attempt recorded as open');
+  const wc = await o.recordWork({ kind: 'correction', task: 'Wire proactive recall', content: 'use a pre-turn hook, not a tool the model must choose', outcome: 'hook approach adopted' });
+  ok(wc.success && wc.tier === 'memory', 'correction lands in durable memory tier');
+  const openA = o.openTasks();
+  ok(openA.some((t) => t.task === 'Wire proactive recall' && t.status === 'open'), 'open task is tracked as an ongoing request');
+  await o.recordWork({ kind: 'task_attempt', task: 'Wire proactive recall', status: 'done', outcome: 'shipped' });
+  ok(!o.openTasks().some((t) => t.task === 'Wire proactive recall'), 'marking status done removes it from ongoing requests');
+  // work events are first-class entries → retrievable by hybrid search
+  const wq = await o.query('proactive recall pre-turn hook', { limit: 5 });
+  ok(wq.results.some((r) => /proactive recall/i.test(r.content)), 'recorded work event is retrievable via query');
+
+  // 13. proactiveRecall self-gates: surfaces a relevant hit, stays silent on noise
+  const prHit = await o.proactiveRecall('how do we wire proactive recall', { minScore: 0, force: true });
+  ok(prHit.inject && prHit.used.length > 0, 'proactiveRecall surfaces an inject block for a relevant message');
+  const prNoise = await o.proactiveRecall('zzqx unrelated gibberish term', { minScore: 0.99 });
+  ok(prNoise.inject === null, 'proactiveRecall stays silent (inject:null) below threshold');
+
+  // 14. P4 temporal/workflow boosts: dead-ends are demoted + flagged; corrections retrievable.
+  await o.recordWork({ kind: 'dead_end', task: 'parser approach', content: 'tried regex spelunking the minified bundle dead end avoid', outcome: 'too brittle' });
+  const deq = await o.query('regex spelunking minified bundle dead end avoid', { limit: 5 });
+  const deHit = deq.results.find((r) => /dead end avoid|regex spelunking/i.test(r.content));
+  ok(deHit && deHit.rank?.deadEndWarning === true, 'P4: dead-end surfaces flagged as a warning (rank.deadEndWarning)');
+
+  // 15. P6 atomic claims: supersede + freshness "current" + deterministic contradiction
+  const c1 = o.claims.add({ content: 'The OpenClaw gateway webhook route is registered and healthy' });
+  const sup = o.supersedeClaim(c1.id, { content: 'The OpenClaw gateway webhook route was de-registered after the matrix reload' });
+  ok(sup.success && o.claims.get(c1.id).status === 'superseded', 'P6: supersede marks the old claim superseded + cross-links');
+  const cur = o.currentClaims('OpenClaw gateway webhook route', { limit: 5 });
+  ok(cur.length && cur[0].id === sup.current && cur.every((c) => c.status !== 'superseded'), 'P6: current() returns the freshest non-superseded claim');
+  o.claims.add({ content: 'the matrix plugin is enabled and configured' });
+  o.claims.add({ content: 'the matrix plugin is not enabled, it was disabled' });
+  const contra = o.claimContradictions({ minShared: 2 });
+  ok(contra.some((p) => /matrix plugin/i.test(p.contentA) && /matrix plugin/i.test(p.contentB)), 'P6: deterministic contradiction finder flags the negated pair');
+
+  // 16. P5 concept routing: build the graph (embed nodes + communities), retrieval stays fail-soft.
+  const cg = await o.refreshConcepts();
+  ok(cg.embedded > 0 && cg.communities >= 1, `P5: concept graph built (embedded ${cg.embedded} nodes, ${cg.communities} communities)`);
+  const crq = await o.query('hybrid retrieval vector fusion', { limit: 5 });
+  ok(crq.results.length > 0, 'P5: retrieval still returns results with concept routing enabled (fail-soft)');
+
+  // 17. Governance realpath: a symlink inside an allowed root must not escape it.
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ocmw-outside-'));
+  try {
+    fs.writeFileSync(path.join(outside, 'secret.md'), 'outside the allowed roots entirely');
+    const link = path.join(tmp, 'escape.md');
+    fs.symlinkSync(path.join(outside, 'secret.md'), link);
+    await denies(() => o.ingest({ path: link, type: 'note' }), 'symlink escaping the source root blocked');
+    await denies(() => o.ingest({ path: path.join(tmp, 'does-not-exist.md'), type: 'note' }), 'unresolvable path denied (fail-closed)');
+  } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+
+  // 18. Concept canonicalization: trivial variants land on ONE node; identifiers are exempt.
+  const idA = o.graph.upsertNode({ type: 'concept', label: 'Inference Costs' });
+  const idB = o.graph.upsertNode({ type: 'concept', label: 'inference cost' });
+  ok(idA === idB, 'case/plural concept variants share one node id');
+  const tA = o.graph.upsertNode({ type: 'source', label: 'notes/plan.md' });
+  const tB = o.graph.upsertNode({ type: 'source', label: 'note/plan.md' });
+  ok(tA !== tB, 'identifier-like node types are NOT plural-folded (distinct paths stay distinct)');
+
+  // 19. Curated merge: near-duplicate folds into the target with its label kept as an alias.
+  o.graph.upsertNode({ type: 'concept', label: 'AI inference costs' });
+  const dupes = o.lint().dupeConcepts;
+  ok(dupes.some((d) => /ai inference costs/i.test(d.variant) || /ai inference costs/i.test(d.keep)), 'lint surfaces the near-duplicate pair as a merge candidate');
+  const mg = await o.mergeConcepts('AI inference costs', 'Inference Costs');
+  ok(mg.success, `curated merge folded '${mg.merged}' into '${mg.into}'`);
+  const target = o.graph.node(mg.intoId);
+  ok((target.properties.aliases || []).includes('AI inference costs'), 'merged label retained as an alias on the canonical node');
+  ok(o.lint().lowTrustWisdom.length === 0, 'lint reports no low-trust wisdom on a healthy store');
+
+  // 20. Dedupe sweep is idempotent (pre-canonicalization rows get folded, second pass is a no-op).
+  const dd = await o.refreshConcepts();
+  ok(dd.deduped === 0, 'canonical store dedupes to zero on a follow-up pass');
+
+  // 21. Projection hygiene: archived entries lose their vault page; concept slugs are canonical.
+  const staleEntry = await o.storeMemory({ content: 'ephemeral page that should be pruned from the vault', tier: 'fact', type: 'note' });
+  o.project();
+  const factDir = path.join(tmp, 'vault', 'LLM Wiki', 'fact');
+  ok(fs.existsSync(path.join(factDir, `${staleEntry.id}.md`)), 'active entry projects a vault page');
+  await o.forget(staleEntry.id, { soft: true });
+  const reproj = o.project();
+  ok(!fs.existsSync(path.join(factDir, `${staleEntry.id}.md`)) && reproj.pruned >= 1, `stale vault page pruned on reprojection (pruned=${reproj.pruned})`);
+  const cfiles = fs.readdirSync(path.join(tmp, 'vault', 'LLM Wiki', 'concepts'));
+  ok(cfiles.every((f) => f === f.toLowerCase()), 'concept page filenames are canonical lowercase (case-insensitive-share safe)');
+
+  // 22. Retention: forced maintain prunes old log/audit rows + vectors of hard-deleted entries.
+  o.db.prepare("INSERT INTO log(ts,operation,detail) VALUES('2020-01-01T00:00:00Z','ancient','{}')").run();
+  const doomed = await o.storeMemory({ content: 'to be hard deleted for vector retention', tier: 'fact', type: 'note' });
+  o.db.prepare("UPDATE entries SET status='deleted' WHERE id=?").run(doomed.id);
+  const mres = await o.maintain({ force: true });
+  ok(mres.retention && mres.retention.log >= 1, `retention pruned ${mres.retention?.log} ancient log rows`);
+  ok(o.db.prepare('SELECT COUNT(*) c FROM vectors WHERE entry_id=?').get(doomed.id).c === 0, 'retention removed vectors of hard-deleted entries');
+
+  console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
+} catch (e) {
+  console.error('\nFATAL:', e.stack); fail++;
+} finally {
+  o.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+  process.exit(fail === 0 ? 0 : 1);
+}
