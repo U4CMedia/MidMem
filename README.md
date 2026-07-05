@@ -93,6 +93,12 @@ production ingest so vectors are semantically meaningful.
 
 The middleware speaks MCP, so any MCP-capable agent can use it. Three supported topologies:
 
+> **How knowledge is *captured* per stack** (OpenClaw · Hermes · Claude Code), what's reliable and what
+> isn't, is in **[`docs/STACK-CAPTURE.md`](docs/STACK-CAPTURE.md)**. Packaged, reusable per-turn capture
+> code + honest deployment status is in **[`integrations/`](integrations/)** (Hermes core capture is
+> LIVE; the OpenClaw plugin is retired/reference). Engineering + grounding rules:
+> **[`docs/DEVELOPMENT-GUIDELINES.md`](docs/DEVELOPMENT-GUIDELINES.md)**.
+
 ### Option A — OpenClaw only (1:1)
 Register the MCP server in OpenClaw; it's the sole consumer. A single agent needs no scope
 partitioning, so use `MIDMEM_AGENT_SCOPE=shared`.
@@ -271,7 +277,8 @@ packages/{orchestrator,tiered-memory,obsidian-bridge,sigma-verifier,mcp-memory}/
                        # legacy interim scaffold — reference only, superseded by core
 wiki/ memory/ graph/ claims/ audit/ config/   # scaffold-era dirs (vault is now external)
 skills/                # MidMem Skills Library (Claude Code) — see skills/README.md
-docs/                  # design notes — see docs/README.md
+integrations/          # packaged reusable per-turn capture code + status — see integrations/README.md
+docs/                  # design notes — INTEGRATION-MODES, STACK-CAPTURE, DEVELOPMENT-GUIDELINES
 RESEARCH.md            # research → architecture-decision record (DELEGATE-52, …)
 ```
 

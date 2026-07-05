@@ -1,0 +1,13 @@
+{
+  "id": "midmem-workcapture",
+  "name": "midmem-workcapture",
+  "description": "Deterministically record a midmem work-event per delivered agent reply (message_sent). Fail-open, deterministic, no LLM judgment.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

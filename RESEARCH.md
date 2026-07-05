@@ -11,6 +11,12 @@ matters to us), **(3) Decision** (what we changed or chose, and what we delibera
 **(4) Validation** (how we test the safeguard holds — prefer deterministic checks + smoke tests).
 Keep claims verified against the source, not a model's summary.
 
+> **Operational companion:** [`docs/DEVELOPMENT-GUIDELINES.md`](docs/DEVELOPMENT-GUIDELINES.md) turns
+> these findings (DELEGATE-52 grounding, structured-over-fuzzy signals, verify-a-hook-*fires*, call-time
+> DB paths, three-tier QA) into the concrete engineering rules that real MidMem integration work
+> (OD-CYCLE-004…007) produced. [`docs/STACK-CAPTURE.md`](docs/STACK-CAPTURE.md) records what each agent
+> stack actually captures.
+
 ---
 
 ## 2026-06 — DELEGATE-52: LLMs corrupt documents under delegation
