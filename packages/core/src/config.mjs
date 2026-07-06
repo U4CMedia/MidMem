@@ -57,7 +57,7 @@ export function loadConfig(overrides = {}) {
       { dir: path.join(VAULT, 'Hermes'), scope: 'hermes', type: 'note' },
     ],
     /** LM Studio OpenAI-compatible endpoint (embeddings + extraction). */
-    llmEndpoint: env('LLM_ENDPOINT') || 'http://192.168.50.210:1234/v1',
+    llmEndpoint: env('LLM_ENDPOINT') || 'http://localhost:1234/v1',
     embedModel: env('EMBED_MODEL') || 'nomic-embed-text',
     extractModel: env('EXTRACT_MODEL') || 'qwen/qwen3.6-35b-a3b',
     /** Allow network LLM calls; when false, deterministic offline fallbacks are used. */
