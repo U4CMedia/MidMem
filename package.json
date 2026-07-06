@@ -9,18 +9,12 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "pnpm -r build",
-    "lint": "pnpm -r lint",
-    "test": "pnpm -r test",
-    "mcp:server": "node packages/mcp-memory/dist/server.js",
-    "wiki:lint": "node scripts/lint.js",
-    "wiki:ingest": "node scripts/ingest.js",
-    "wiki:query": "node scripts/query.js",
-    "wiki:update": "node scripts/update.js",
-    "memory:brief": "node packages/mcp-memory/dist/tools/brief.js",
-    "memory:audit": "node packages/mcp-memory/dist/tools/audit.js"
+    "test": "npm --prefix packages/core test",
+    "verify": "npm --prefix packages/core run verify",
+    "mcp:server": "node packages/core/bin/mcp-server.mjs",
+    "cli": "node packages/core/bin/cli.mjs"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.5.0"
   }
 }
