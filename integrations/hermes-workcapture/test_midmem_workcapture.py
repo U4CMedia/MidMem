@@ -1,12 +1,13 @@
-"""test_midmem_workcapture — 11 acceptance tests per CONTRACT-HERMES-CORE.md.
+"""test_midmem_workcapture — acceptance + unit tests for the Hermes core capture module.
 
-Run: python3 -m pytest hermes-core/test_midmem_workcapture.py -v
-     or: python3 -m unittest hermes-core.test_midmem_workcapture -v
+Run from this directory (integrations/hermes-workcapture/):
+     python3 -m unittest test_midmem_workcapture -v
 """
 
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,8 +15,8 @@ import textwrap
 import time
 import unittest
 
-# Make the module importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hermes-core"))
+# Make the module importable — it sits beside this test file.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import midmem_workcapture as mc
 
@@ -27,13 +28,16 @@ import midmem_workcapture as mc
 # specific db (the real-integration test) override MIDMEM_DB_PATH themselves.
 # ---------------------------------------------------------------------------
 _SUITE_TMP_DB = None
+_SUITE_TMP_DIR = None
 _SUITE_OLD_DB = None
 
 
 def setUpModule():
-    global _SUITE_TMP_DB, _SUITE_OLD_DB
+    global _SUITE_TMP_DB, _SUITE_TMP_DIR, _SUITE_OLD_DB
     _SUITE_OLD_DB = os.environ.get("MIDMEM_DB_PATH")
-    _SUITE_TMP_DB = tempfile.mktemp(suffix="-suite.db")
+    # mkdtemp (not the insecure mktemp) — a private 0700 dir, unpredictable name.
+    _SUITE_TMP_DIR = tempfile.mkdtemp(prefix="midmem-suite-")
+    _SUITE_TMP_DB = os.path.join(_SUITE_TMP_DIR, "suite.db")
     os.environ["MIDMEM_DB_PATH"] = _SUITE_TMP_DB
 
 
@@ -43,8 +47,8 @@ def tearDownModule():
     else:
         os.environ.pop("MIDMEM_DB_PATH", None)
     try:
-        if _SUITE_TMP_DB and os.path.exists(_SUITE_TMP_DB):
-            os.remove(_SUITE_TMP_DB)
+        if _SUITE_TMP_DIR and os.path.isdir(_SUITE_TMP_DIR):
+            shutil.rmtree(_SUITE_TMP_DIR, ignore_errors=True)
     except Exception:
         pass
 
@@ -443,8 +447,8 @@ class TestRealMidmemIntegration(unittest.TestCase):
         wait, sqlite3 read → 1 row, scope='hermes', distinctive token."""
         import sqlite3
 
-        # Create fresh temp db
-        tmpdb = tempfile.mktemp(suffix=".db")
+        # Create fresh temp db in a secure temp dir (mkdtemp, not insecure mktemp).
+        tmpdb = os.path.join(tempfile.mkdtemp(prefix="midmem-emit-"), "emit.db")
 
         # _emit reads MIDMEM_DB_PATH at CALL time — redirect the emit to the
         # temp db via env so the real spawn NEVER touches prod state.db.

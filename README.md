@@ -22,8 +22,8 @@ pre/post-turn seam. See [Integration](#integration) + `docs/INTEGRATION-MODES.md
 > pruning (stale pages removed; case-insensitive-share-safe slugs)** + **realpath ingest guard** +
 > **log/audit/vector retention**. Tested: smoke **90/90** + bench green (`npm run verify`).
 > Runnable Node ESM, **zero external dependencies** (Node ≥ 22.5 built-ins only: `node:sqlite`,
-> `crypto`, `fetch`). `packages/core/` is the active foundation; the other `packages/*` are the
-> superseded interim scaffold, kept for reference only.
+> `crypto`, `fetch`). `packages/core/` is the sole package — the active, self-contained foundation
+> (the superseded interim scaffold was removed; it remains in git history if ever needed).
 
 ---
 
@@ -300,8 +300,6 @@ packages/core/         # ← active foundation (this README describes it)
                        # orchestrator, config
   bin/                 # cli.mjs, mcp-server.mjs, hook.mjs (pre/post-turn seam — the 4-modes caller)
   test/                # smoke.mjs (90 checks) + bench.mjs (Brain-style regression gate)
-packages/{orchestrator,tiered-memory,obsidian-bridge,sigma-verifier,mcp-memory}/
-                       # legacy interim scaffold — reference only, superseded by core
 wiki/ memory/ graph/ claims/ audit/ config/   # scaffold-era dirs (vault is now external)
 skills/                # MidMem Skills Library (Claude Code) — see skills/README.md
 integrations/          # packaged reusable per-turn capture code + status — see integrations/README.md
