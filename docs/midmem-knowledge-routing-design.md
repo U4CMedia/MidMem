@@ -1,6 +1,6 @@
 # midmem — trigger-less knowledge routing (design)
 
-**Goal (Don, 2026-06-14):** surface stored knowledge in natural language, frequently, **without
+**Goal (2026-06-14):** surface stored knowledge in natural language, frequently, **without
 specific triggers** and **without burning context tokens** — ideally via a high-level tagging/linking
 tree that simplifies query mechanics.
 
@@ -30,7 +30,7 @@ retrieves cheaply on (nearly) every turn and *surfaces* only what clears the bar
 **This alone closes the gap** and is mostly wiring (the retrieval, budget, embeddings, and brief
 formatter already exist). Ship it first.
 
-## Phase 2 — The tagging/linking tree (Don's "ultimate goal"): YES, and ~70% of it exists
+## Phase 2 — The tagging/linking tree (the "ultimate goal"): YES, and ~70% of it exists
 The substrate is already here:
 - **Concept graph** (`nodes`/`edges`) — concepts/entities extracted on every ingest, with relations.
 - **Per-entry `concepts`** + a **graph ref-chain boost** already in retrieval.

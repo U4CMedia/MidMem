@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "license": "Apache-2.0",
   "description": "Rebuilt foundation: single state.db source-of-truth + hybrid RAG (FTS5 ⊕ vector) + tiered memory + typed graph + claims + fail-closed governance + Obsidian projection. Runnable Node ESM, zero external deps.",
   "exports": {
     ".": "./src/index.mjs"

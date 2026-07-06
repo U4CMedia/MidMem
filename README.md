@@ -35,17 +35,16 @@ pull the relevant slice **on demand** via hybrid retrieval from an unbounded, sh
 
 ## Architecture
 
-```
-sources ──ingest──► LLM extract (concepts/claims/embeddings) ─┐  (deterministic offline fallback)
-                                                              ▼ transactional write
-        ┌───────────────────── state.db  (SINGLE source of truth) ─────────────────────┐
-        │ entries · entries_fts (FTS5/BM25) · vectors · nodes · edges · claims · log    │
-        └───────────────────────────────────────────────────────────────────────────────┘
-              │ project (LLM-owned)                ▲ verify (deterministic, one graph)
-              ▼                                    │
-        Obsidian vault (projection)  ── query: FTS5 ⊕ trigram ⊕ vector (RRF) + trust/graph boosts ──►
-              ▲                                    │
-              └──────────── MCP server (21 tools) ─┴──► OpenClaw / Hermes
+```mermaid
+flowchart TB
+    src([sources]) -->|ingest| extract["LLM extract — concepts · claims · embeddings<br/>(deterministic offline fallback)"]
+    extract -->|transactional write| DB[("state.db — SINGLE source of truth<br/>entries · entries_fts (FTS5/BM25) · vectors<br/>nodes · edges · claims · log")]
+
+    DB -->|"project (LLM-owned)"| vault[["Obsidian vault (projection)"]]
+    verify["verify (deterministic, one graph)"] -->|"consistency check"| DB
+
+    DB <-->|"query: FTS5 ⊕ trigram ⊕ vector (RRF) + trust / graph boosts"| mcp{{"MCP server (21 tools)"}}
+    mcp <-->|"MCP tools"| agents["OpenClaw / Hermes"]
 ```
 
 - **`state.db` is the source of truth**; the markdown vault is a deterministic projection of it.
@@ -290,4 +289,4 @@ RESEARCH.md            # research → architecture-decision record (DELEGATE-52,
 - [`RESEARCH.md`](RESEARCH.md) — why the store is built the way it is, grounded in papers.
 
 ## License
-MIT
+[Apache License 2.0](LICENSE)
