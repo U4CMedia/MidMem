@@ -3,7 +3,7 @@
 The runnable foundation: a single SQLite source-of-truth (`state.db`), hybrid retrieval, tiered
 memory with a self-driving lifecycle, a typed graph, claims/provenance, fail-closed governance, an
 Obsidian projection, and a DELEGATE-52 extraction-grounding check — exposed over MCP, a CLI, and a
-programmatic API. Node ESM, **zero external deps** (Node ≥ 22.5 built-ins).
+programmatic API. Node ESM, **zero external deps** (Node ≥ 22.13 built-ins).
 
 ## Layout
 - `src/` — the modules. Key ones: `orchestrator.mjs` (the coordinator/API), `db.mjs` (`state.db`),

@@ -21,7 +21,7 @@ pre/post-turn seam. See [Integration](#integration) + `docs/INTEGRATION-MODES.md
 > (case/plural dedupe, curated `merge-concepts`, alias-aware retrieval)** + **vault projection
 > pruning (stale pages removed; case-insensitive-share-safe slugs)** + **realpath ingest guard** +
 > **log/audit/vector retention**. Tested: smoke **90/90** + bench green (`npm run verify`).
-> Runnable Node ESM, **zero external dependencies** (Node ≥ 22.5 built-ins only: `node:sqlite`,
+> Runnable Node ESM, **zero external dependencies** (Node ≥ 22.13 built-ins only: `node:sqlite`,
 > `crypto`, `fetch`). `packages/core/` is the sole package — the active, self-contained foundation
 > (the superseded interim scaffold was removed; it remains in git history if ever needed).
 
@@ -214,7 +214,7 @@ Two skills front the store; pick by how you're driving the stack:
 ## Quick start
 
 ```bash
-# No install needed (Node ≥ 22.5 built-ins only).
+# No install needed (Node ≥ 22.13 built-ins only — node:sqlite is flag-free from 22.13).
 cd packages/core
 node test/smoke.mjs                          # end-to-end self-test (offline) → 90/90
 npm run verify                               # smoke + Brain-style regression bench

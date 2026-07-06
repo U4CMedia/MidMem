@@ -19,5 +19,5 @@
     "mcp": "node bin/mcp-server.mjs",
     "cli": "node bin/cli.mjs"
   },
-  "engines": { "node": ">=22.5.0" }
+  "engines": { "node": ">=22.13.0" }
 }

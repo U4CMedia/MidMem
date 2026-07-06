@@ -5,9 +5,9 @@ middleware memory layer for LLM agents.
 
 ## Ground Rules
 
-- The active codebase is **`packages/core/`**. The other `packages/*` are a
-  superseded interim scaffold kept for reference — please don't build on them.
-- The core is intentionally **zero-dependency** (Node >= 22.5 built-ins only:
+- The active codebase is **`packages/core/`** (the sole package; the superseded
+  interim scaffold was removed and lives only in git history).
+- The core is intentionally **zero-dependency** (Node >= 22.13 built-ins only:
   `node:sqlite`, `crypto`, `fetch`). Please do not add external runtime
   dependencies without discussion first — open an issue to propose it.
 - Never commit secrets, credentials, private IP addresses, absolute local
@@ -16,7 +16,8 @@ middleware memory layer for LLM agents.
 
 ## Prerequisites
 
-- Node.js **>= 22.5** (required for the built-in `node:sqlite`).
+- Node.js **>= 22.13** — the first version where the built-in `node:sqlite` runs
+  without the `--experimental-sqlite` flag (22.5–22.12 require that flag).
 
 ## Development Loop
 

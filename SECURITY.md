@@ -3,14 +3,13 @@
 ## Supported Versions
 
 MidMem is pre-1.0 and under active development. Security fixes are applied
-to the `main` branch (the active `packages/core` foundation). The legacy
-interim scaffold under `packages/{orchestrator,tiered-memory,obsidian-bridge,
-sigma-verifier,mcp-memory}` is reference-only and not supported.
+to the `main` branch (the active `packages/core` foundation — the sole package;
+the legacy interim scaffold was removed from the tree and is unsupported).
 
 | Version | Supported |
 | ------- | --------- |
 | main (packages/core) | :white_check_mark: |
-| legacy scaffold      | :x:                |
+| legacy scaffold (git history only) | :x: |
 
 ## Reporting a Vulnerability
 
@@ -37,7 +36,7 @@ before any public disclosure.
 
 ## Scope & Notes
 
-- MidMem's active core has **zero external runtime dependencies** (Node >= 22.5
+- MidMem's active core has **zero external runtime dependencies** (Node >= 22.13
   built-ins only), which keeps the dependency attack surface minimal.
 - The knowledge store (`state.db`) and any memory content are intended to
   stay local; they are git-ignored and must never be committed to a remote.
