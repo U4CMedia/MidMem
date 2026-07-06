@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Keep CI action versions patched
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+
+  # Python helper in the Hermes work-capture integration
+  - package-ecosystem: "pip"
+    directory: "/integrations/hermes-workcapture"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
