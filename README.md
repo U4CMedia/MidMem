@@ -300,7 +300,7 @@ packages/core/         # ← active foundation (this README describes it)
                        # orchestrator, config
   bin/                 # cli.mjs, mcp-server.mjs, hook.mjs (pre/post-turn seam — the 4-modes caller)
   test/                # smoke.mjs (90 checks) + bench.mjs (Brain-style regression gate)
-wiki/ memory/ graph/ claims/ audit/ config/   # scaffold-era dirs (vault is now external)
+config/                # tier-config.json (tunables) + AGENTS.md (agent instructions)
 skills/                # MidMem Skills Library (Claude Code) — see skills/README.md
 integrations/          # packaged reusable per-turn capture code + status — see integrations/README.md
 docs/                  # design notes — INTEGRATION-MODES, STACK-CAPTURE, DEVELOPMENT-GUIDELINES
