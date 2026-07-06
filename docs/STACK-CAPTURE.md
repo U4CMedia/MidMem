@@ -33,7 +33,7 @@ before landing (see the case studies). Don't rely on passive conversation being 
 | **OpenClaw / Hermes** | write a deliverable to a bridged folder (`workspace/memory`, `hermes/memories`, vault `OpenClaw/`·`Hermes/`) → daily `maintain` bridge | high *for docs* | daily |
 | **Hermes** | **automatic per-turn** work-event in `turn_finalizer.finalize_turn` (OD-CYCLE-007) | **live — fires every ACP/kanban turn** | immediate |
 | **OpenClaw** | automatic per-turn via `message:sent`/managed hook | **does NOT work** (see OD-CYCLE-006) | — |
-| **Claude Code** | `openduck-record` skill → `midmem remember`, Stop-guard-enforced | high, enforced | immediate |
+| **Claude Code** | `midmem-record` skill → `midmem remember`, `Stop`-guard-enforced | high, enforced | immediate |
 
 ## Case studies — what worked, what didn't, and why (the load-bearing findings)
 
@@ -61,9 +61,12 @@ OpenClaw is the daily-driver, not the capture-critical path; its content reaches
 doc bridge for anything written to a bridged folder.
 
 ### Claude Code — explicit + enforced (OD-CYCLE-004)
-The `openduck-record` skill routes lessons to `midmem remember` and a CHANGELOG, and a `PostToolUse` +
-`Stop` guard hook **blocks a turn from ending** while a config/service/install change is unrecorded.
-This is the most reliable capture path on the host and the model for "harness-guaranteed" recording.
+The **`midmem-record`** skill (shipped in [`skills/`](../skills/)) routes lessons to `midmem remember`
+(and a changelog), and a `PostToolUse` + `Stop` guard hook **blocks a turn from ending** while a
+recordable change is unrecorded. This is the most reliable capture path in the stack and the model for
+"harness-guaranteed" recording. Claude Code is also the **frontier orchestrator** that plans/QAs and
+drives Hermes builds over kanban/ACP (see [INTEGRATION-MODES.md](INTEGRATION-MODES.md) §5) — so most
+durable knowledge enters through this enforced path.
 
 ## Practical guidance — to ENSURE something is captured
 1. **`/ingest <thing>`** — the immediate, durable, user-driven lever.

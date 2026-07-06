@@ -43,9 +43,19 @@ flowchart TB
     DB -->|"project (LLM-owned)"| vault[["Obsidian vault (projection)"]]
     verify["verify (deterministic, one graph)"] -->|"consistency check"| DB
 
-    DB <-->|"query: FTS5 ⊕ trigram ⊕ vector (RRF) + trust / graph boosts"| mcp{{"MCP server (21 tools)"}}
-    mcp <-->|"MCP tools"| agents["OpenClaw / Hermes"]
+    DB <-->|"query: FTS5 ⊕ trigram ⊕ vector (RRF) + trust / graph boosts"| mcp{{"MCP server (21 tools) · CLI · hook seam"}}
+
+    mcp <--> oc["OpenClaw<br/>(daily driver)"]
+    mcp <--> hz["Hermes Agent<br/>(build workhorse)"]
+    mcp <--> cc["Claude Code<br/>(frontier orchestrator)"]
+
+    cc -->|"plans · QAs · drives via kanban / ACP"| hz
+    skills["MidMem Skills Library (Claude Code)<br/>midmem-dev · midmem-orchestrator<br/>midmem-ingest-review · midmem-record"] -.->|equip| cc
 ```
+
+The three consumers share one `state.db` over the same MCP/CLI/hook surface. **Claude Code** is the
+frontier-orchestration overlay: it drives Hermes (plan → dispatch build → QA) and records durably —
+equipped by the **MidMem Skills Library** that ships in [`skills/`](skills/).
 
 - **`state.db` is the source of truth**; the markdown vault is a deterministic projection of it.
 - **Hybrid retrieval**: SQLite FTS5/BM25 (token lexical) ⊕ FTS5-trigram (substring lexical) ⊕ vector
@@ -155,6 +165,22 @@ other's private scope. Concurrency across the two server processes is handled by
 | Private + shared memory | — | — | ✅ |
 | Shared `state.db` | n/a | n/a | ✅ (same path) |
 
+### Claude Code overlay — frontier orchestration, tight Hermes integration
+Any of the options above can be **driven by Claude Code** as a third consumer of the same `state.db`.
+Claude Code is not a fourth store mode — it reaches the core through the identical **CLI + MCP + hook**
+surface — but it plays a distinct role: the **frontier orchestrator**. It plans MidMem work, dispatches
+the mechanical build to **Hermes** (over kanban / ACP), QAs each result, and records durably — so
+Claude Code and Hermes integrate tightly around one shared knowledge store: Claude Code decides and
+verifies, Hermes builds, and both read/write the same tiered memory.
+
+- **Register** the MCP server for Claude Code like any consumer (`MIDMEM_AGENT_SCOPE=shared`, or a
+  dedicated scope in a multi-stack deployment), or just use the `midmem` **CLI** directly.
+- **Equip it** with the [MidMem Skills Library](skills/) — `midmem-dev` (change the core),
+  `midmem-orchestrator` + `midmem-ingest-review` (curate + QA), `midmem-record` (durable capture).
+- **Guaranteed capture**: a Claude Code `Stop`-hook can block a turn from ending until a recordable
+  change is written to MidMem — the most reliable capture path in the stack (see
+  [`docs/STACK-CAPTURE.md`](docs/STACK-CAPTURE.md) and the `midmem-record` skill).
+
 ### Skills — which one to use per integration
 Two skills front the store; pick by how you're driving the stack:
 
@@ -162,8 +188,10 @@ Two skills front the store; pick by how you're driving the stack:
 |---|---|---|---|
 | **`midmem-ops`** | OpenClaw (`workspace/skills/`) | the OpenClaw agent | recall / store / ingest / proactive-recall / feedback directly via the MCP tools |
 | **`hermes-build-orchestrator`** | Claude Code (`.claude/skills/`) | a frontier model (plan + QA); Hermes/qwen + gpt-5.5 build via kanban | multi-card builds with a QA gate per card |
+| **`midmem-dev`** | **this repo** (`skills/`) | a frontier model (Claude Code) | changing the **core** code: add/adjust a capability with the test→verify→commit→record loop + guardrails |
 | **`midmem-orchestrator`** | **this repo** (`skills/`) | same loop, MidMem-specialized | bulk knowledge curation: batch ingest, re-ground, dedup, vault verify |
 | **`midmem-ingest-review`** | **this repo** (`skills/`) | a frontier model | ingest + audit knowledge quality and **cross-check OpenClaw vs Hermes understanding** (confabulation/drift/contradiction/scope) |
+| **`midmem-record`** | **this repo** (`skills/`) | a frontier model (Claude Code) | durable capture: distilled lesson → wisdom tier + commit + the `Stop`-hook harness-guaranteed recording pattern |
 
 - **OpenClaw only (Option A):** use **`midmem-ops`** — the OpenClaw agent operates memory itself
   (recall/store/ingest); no Hermes needed.
@@ -283,8 +311,8 @@ RESEARCH.md            # research → architecture-decision record (DELEGATE-52,
 
 ## Subfolder guides
 - [`packages/core/README.md`](packages/core/README.md) — the engine: modules, how to run, env vars.
-- [`skills/README.md`](skills/README.md) — the MidMem Skills Library (`midmem-orchestrator`,
-  `midmem-ingest-review`) + install.
+- [`skills/README.md`](skills/README.md) — the MidMem Skills Library (`midmem-dev`,
+  `midmem-orchestrator`, `midmem-ingest-review`, `midmem-record`) + install.
 - [`docs/README.md`](docs/README.md) — design notes index.
 - [`RESEARCH.md`](RESEARCH.md) — why the store is built the way it is, grounded in papers.
 

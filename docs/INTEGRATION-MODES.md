@@ -64,6 +64,23 @@ own + `shared`). OpenClaw is the driver: it routes research/build to Hermes over
 - Work events recorded by either stack are visible to both — a correction Hermes logs shapes
   OpenClaw's future turns, and vice-versa.
 
+## 5. Claude Code overlay — frontier orchestration (composes with any mode)
+
+Not a fifth *store* mode — Claude Code reaches the core through the **same CLI + MCP + hook seam** as
+everyone else — but a distinct *role* worth calling out, because it integrates tightly with Hermes.
+Claude Code is the **frontier orchestrator**: it plans MidMem work, dispatches the mechanical build to
+**Hermes** over kanban / ACP, QAs each result, and records durably. Claude Code decides and verifies;
+Hermes builds; both read/write the one shared `state.db`.
+
+- **Wiring:** register the MCP server for Claude Code as a consumer (`MIDMEM_AGENT_SCOPE=shared`, or a
+  dedicated scope in a multi-stack deployment), or drive the `midmem` CLI directly.
+- **Skills:** the [MidMem Skills Library](../skills/) (ships in-repo) equips it — `midmem-dev` (change
+  the core), `midmem-orchestrator` + `midmem-ingest-review` (curate + QA), `midmem-record` (durable
+  capture). These are portable, Claude-Code-only adaptations of the skills a live deployment runs.
+- **Guaranteed capture:** a Claude Code `Stop`-hook can block a turn from ending until a recordable
+  change is written to MidMem — the most reliable capture path in the stack. See
+  [STACK-CAPTURE.md](STACK-CAPTURE.md).
+
 ---
 
 ## What stays constant across all modes
