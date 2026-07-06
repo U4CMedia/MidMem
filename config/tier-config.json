@@ -25,17 +25,17 @@
       "syncToObsidian": true
     }
   },
-  "obsidianVaultPath": "/home/duck/Obsidian",
+  "obsidianVaultPath": "/path/to/Obsidian",
   "wikiPath": "openclaw-wiki",
-  "memoryPath": "/home/duck/.openclaw/workspace/openclaw-middleware/memory",
-  "graphPath": "/home/duck/.openclaw/workspace/openclaw-middleware/graph",
-  "auditPath": "/home/duck/.openclaw/workspace/openclaw-middleware/audit",
+  "memoryPath": "/path/to/openclaw-middleware/memory",
+  "graphPath": "/path/to/openclaw-middleware/graph",
+  "auditPath": "/path/to/openclaw-middleware/audit",
   "semanticCache": true,
   "semanticCacheTTL": 3600000,
   "syncToObsidian": true,
   "verifyOnIngest": true,
   "sigmaStrictMode": false,
   "llmProvider": "lm-studio",
-  "llmEndpoint": "http://192.168.50.210:1234/v1",
+  "llmEndpoint": "http://localhost:1234/v1",
   "mcpPort": 3100
 }
