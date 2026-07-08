@@ -9,6 +9,20 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { frontmatter, nowISO, canonicalConceptKey } from './util.mjs';
 
+/** A projection pass must survive any single bad page — the vault sits on a network share
+ *  where one entry can be individually broken (e.g. a server-corrupt CIFS name that EACCESes
+ *  every open while the rest of the dir works). Collect a capped sample of per-file failures
+ *  and keep writing; the caller reports them. */
+const MAX_ERROR_SAMPLE = 8;
+function safeWrite(file, body, state) {
+  try { fs.writeFileSync(file, body); return true; }
+  catch (e) {
+    state.failed++;
+    if (state.errors.length < MAX_ERROR_SAMPLE) state.errors.push(`${path.basename(file)}: ${e.code || e.message}`);
+    return false;
+  }
+}
+
 /** Remove stale projected pages: any .md in `dir` not in `keep`. The projection owns these
  *  dirs outright (owner: llm), so a page with no live backing row is stale by definition —
  *  without this, archived/expired entries stay visible in the vault forever. */
@@ -30,9 +44,13 @@ function pruneDir(dir, keep) {
  */
 export function projectVault(db, memory, graph, cfg) {
   const root = path.join(cfg.vaultPath, cfg.wikiPath);
+  // Root must exist before anything else — if THIS fails the vault is gone (unmounted share),
+  // which is a whole-projection failure and should throw as before.
+  fs.mkdirSync(root, { recursive: true });
   const entries = memory.listActive();
   let written = 0;
   let pruned = 0;
+  const state = { failed: 0, errors: [] };
   const keepByDir = new Map(); // dir → Set of filenames that belong in this projection
 
   // Per-entry pages, grouped by tier.
@@ -52,8 +70,7 @@ export function projectVault(db, memory, graph, cfg) {
       concepts.length ? `## Concepts\n${concepts.join(' · ')}` : '',
       e.provenance ? `\n## Provenance\n\`\`\`json\n${JSON.stringify(e.provenance, null, 2)}\n\`\`\`` : '',
     ].join('\n');
-    fs.writeFileSync(path.join(dir, `${e.id}.md`), body);
-    written++;
+    if (safeWrite(path.join(dir, `${e.id}.md`), body, state)) written++;
   }
 
   // Concept/entity pages from the graph. Filenames come from the CANONICAL key, not the raw
@@ -75,9 +92,8 @@ export function projectVault(db, memory, graph, cfg) {
         links.length ? `## Related\n${links.join('\n')}` : '',
       ].join('\n');
       const fname = `${(canonicalConceptKey(n.label) || n.id).replace(/[^\w.-]+/g, '_')}.md`;
-      fs.writeFileSync(path.join(cdir, fname), body);
-      ckeep.add(fname);
-      written++;
+      if (safeWrite(path.join(cdir, fname), body, state)) written++;
+      ckeep.add(fname); // keep even on failure — a half-broken name must not get pruned into worse state
     }
   }
 
@@ -90,7 +106,6 @@ export function projectVault(db, memory, graph, cfg) {
   }
 
   // index.md + log.md
-  fs.mkdirSync(root, { recursive: true });
   const byTier = {};
   for (const e of entries) (byTier[e.tier] ||= []).push(e);
   let idx = `# Wiki Index\n\n> Projected from state.db — ${nowISO()}\n> ${entries.length} entries · ${g.nodes.length} graph nodes\n\n`;
@@ -99,12 +114,12 @@ export function projectVault(db, memory, graph, cfg) {
     for (const e of es) idx += `- [[${e.tier}/${e.id}]]: ${e.content.slice(0, 80).replace(/\n/g, ' ')}\n`;
     idx += '\n';
   }
-  fs.writeFileSync(path.join(root, 'index.md'), idx);
+  if (safeWrite(path.join(root, 'index.md'), idx, state)) written++;
 
   const logs = db.prepare('SELECT ts,operation,detail FROM log ORDER BY id DESC LIMIT 50').all();
   let logmd = `# Wiki Log\n\n> Projected from state.db — ${nowISO()}\n\n`;
   for (const l of logs) logmd += `## [${l.ts}] ${l.operation}\n\`\`\`json\n${l.detail}\n\`\`\`\n\n`;
-  fs.writeFileSync(path.join(root, 'log.md'), logmd);
+  if (safeWrite(path.join(root, 'log.md'), logmd, state)) written++;
 
-  return { written, pruned, vaultPath: root };
+  return { written, pruned, failed: state.failed, errors: state.errors, vaultPath: root };
 }

@@ -340,7 +340,20 @@ try {
   const cfiles = fs.readdirSync(path.join(tmp, 'vault', 'LLM Wiki', 'concepts'));
   ok(cfiles.every((f) => f === f.toLowerCase()), 'concept page filenames are canonical lowercase (case-insensitive-share safe)');
 
-  // 22. Retention: forced maintain prunes old log/audit rows + vectors of hard-deleted entries.
+  // 22. Projection resilience: one unwritable page (a corrupt share entry) must not abort the pass.
+  const survivor = await o.storeMemory({ content: 'page that must still project around a broken sibling', tier: 'fact', type: 'note' });
+  const ghost = await o.storeMemory({ content: 'page whose vault file is broken server-side', tier: 'fact', type: 'note' });
+  // Simulate the broken entry deterministically: a DIRECTORY squatting on the page's filename
+  // makes writeFileSync fail (EISDIR) just like the CIFS ghost EACCESes, without needing root.
+  fs.mkdirSync(path.join(factDir, `${ghost.id}.md`), { recursive: true });
+  const resil = o.project();
+  ok(resil.failed === 1 && resil.errors.length === 1 && resil.errors[0].includes(ghost.id),
+    `projection reported the broken page and only it: ${JSON.stringify(resil.errors)}`);
+  ok(fs.existsSync(path.join(factDir, `${survivor.id}.md`)), 'sibling page still projected around the broken one');
+  ok(fs.existsSync(path.join(tmp, 'vault', 'LLM Wiki', 'index.md')) && resil.written > 0, 'index.md and the rest of the pass completed');
+  fs.rmSync(path.join(factDir, `${ghost.id}.md`), { recursive: true, force: true });
+
+  // 23. Retention: forced maintain prunes old log/audit rows + vectors of hard-deleted entries.
   o.db.prepare("INSERT INTO log(ts,operation,detail) VALUES('2020-01-01T00:00:00Z','ancient','{}')").run();
   const doomed = await o.storeMemory({ content: 'to be hard deleted for vector retention', tier: 'fact', type: 'note' });
   o.db.prepare("UPDATE entries SET status='deleted' WHERE id=?").run(doomed.id);
