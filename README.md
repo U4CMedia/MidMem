@@ -1,4 +1,4 @@
-# midmem-kb-store — LLM Wiki Knowledge Router
+# MidMem KB Store an LLM Wiki Router
 
 A self-contained **LLM Wiki middleware layer**: a single source-of-truth knowledge store with
 **hybrid retrieval (lexical + vector)**, tiered memory, a typed knowledge graph, claim
